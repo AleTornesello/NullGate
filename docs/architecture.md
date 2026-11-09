@@ -1,6 +1,6 @@
 # Architecture
 
-NullGate consists of four components, all written in Rust. Their process boundaries and communication protocols are TBD.
+NullGate consists of four components, all written in Rust. The initial scaffold uses separate library crates and one executable. Runtime integration and communication protocols are TBD.
 
 ## DNS proxy
 
@@ -42,3 +42,12 @@ Malformed imported rules are reported and ignored; valid rules are accepted.
 The web interface provides blocklist management, metrics, and administration. Administrators can create lists, add rules, import lists, trigger remote updates, and download the public CA certificate. Viewers can read metrics and blocklists without changing them.
 
 Metrics, backend API design, persistence format, and UI implementation are TBD. See [Administration](administration.md) for access rules.
+
+## Workspace dependency direction
+
+- `nullgate` → `nullgate-orchestrator`.
+- `nullgate-orchestrator` → `nullgate-core`, `nullgate-dns`, `nullgate-http`, and `nullgate-web`.
+- Each service crate → `nullgate-core`.
+- `nullgate-core` has no dependencies.
+
+These manifest dependencies reserve the component boundaries. No service wiring or public component API is implemented yet. See the [README](../README.md#development) for build and check commands.

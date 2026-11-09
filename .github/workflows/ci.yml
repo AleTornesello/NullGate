@@ -1,0 +1,30 @@
+name: Rust
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Build all targets
+        run: cargo build --workspace --all-targets --locked
+      - name: Lint all targets
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Run tests
+        run: cargo test --workspace --locked
+      - name: Build documentation
+        run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Smoke test scaffold executable
+        run: cargo run --locked --bin nullgate

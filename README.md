@@ -6,7 +6,7 @@ Run NullGate on the same machine as your browser or on a dedicated server servin
 
 ## Project status
 
-This repository currently documents the intended behavior. It does not yet contain an implementation, installation commands, or executable tests. Undecided features and operational details are marked **TBD**.
+This repository contains the initial Rust workspace scaffold and documentation of the intended behavior. The executable currently reports scaffold status and exits; proxy services and the web interface are not implemented. Undecided features and operational details are marked **TBD**.
 
 ## Features
 
@@ -48,4 +48,27 @@ https://news.example.com/sponsored/*
 
 ## Development
 
-All project components are to be written in Rust. Workspace structure, dependencies, supported platforms, build commands, test commands, and release artifacts are TBD. No particular Rust framework or runtime has been selected in these documents.
+All components use Rust 2024. Install [Rust through rustup](https://rustup.rs/); `rust-toolchain.toml` pins the toolchain and requests rustfmt and Clippy. Run commands from the repository root.
+
+```text
+crates/
+├── nullgate/               # Executable entry point
+├── nullgate-core/          # Shared rules, configuration, and types
+├── nullgate-dns/           # DNS proxy boundary
+├── nullgate-http/          # HTTP proxy and HTTPS inspection boundary
+├── nullgate-orchestrator/  # Lifecycle and rule coordination boundary
+└── nullgate-web/           # Web administration boundary
+```
+
+```sh
+cargo build --workspace --all-targets --locked
+cargo run --locked --bin nullgate
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo doc --workspace --no-deps --locked
+```
+
+The libraries contain documentation-only placeholders. The executable does not open network ports or perform filtering. There are no behavioral tests yet; the test command currently checks that the scaffold's test targets compile and run. CI runs the commands above, with documentation warnings treated as errors.
+
+The scaffold uses only local workspace dependencies. Web frameworks, async runtimes, DNS/TLS libraries, supported deployment platforms, and release artifacts remain undecided.

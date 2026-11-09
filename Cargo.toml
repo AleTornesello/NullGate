@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/nullgate",
+    "crates/nullgate-core",
+    "crates/nullgate-dns",
+    "crates/nullgate-http",
+    "crates/nullgate-orchestrator",
+    "crates/nullgate-web",
+]
+default-members = ["crates/nullgate"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+nullgate-core = { path = "crates/nullgate-core" }
+nullgate-dns = { path = "crates/nullgate-dns" }
+nullgate-http = { path = "crates/nullgate-http" }
+nullgate-orchestrator = { path = "crates/nullgate-orchestrator" }
+nullgate-web = { path = "crates/nullgate-web" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"

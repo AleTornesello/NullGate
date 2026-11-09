@@ -41,7 +41,7 @@ Clients must actually route their relevant DNS and HTTP traffic through NullGate
 ## Details still to define
 
 - Installation artifacts and supported platforms.
-- Build and test workflow for Rust contributors.
+- Release build and packaging workflow (scaffold build/check commands are in the README).
 - Listen addresses, ports, configuration format, and persistent data locations.
 - Web interface transport security and exposure settings.
 - First-run administrator setup and external identity integration.
