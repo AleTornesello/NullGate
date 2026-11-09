@@ -1,6 +1,6 @@
 # NullGate implementation decisions
 
-Date: 2026-11-09. Scope: Tasks 1–4 contracts and implementation from [the implementation plan](superpowers/plans/2026-11-09-nullgate-implementation.md).
+Date: 2026-11-09. Scope: Tasks 1–5 contracts and implementation from [the implementation plan](superpowers/plans/2026-11-09-nullgate-implementation.md).
 
 These are implementation contracts, not claims of working proxy services. Task 2 implements the shared rule engine only. The four specification documents remain the requirements authority; this document resolves their implementation details. No application behavior is added in Task 1.
 
@@ -219,3 +219,33 @@ The Task 3 concurrent-first-initialization minor remains outside this single-own
 - Activation deadlines are cooperative: implementations must yield, perform blocking work off the async reactor, acknowledge only completed invalidations and never recursively call the policy writer. Hard preemption of arbitrary hook code is not provided.
 - Actual proxy admission/connection invalidation, remote fetching, HTTP routes and executable startup remain their owning tasks. Out-of-band repository writers remain unsupported while the coordinator owns policy.
 - Only Tokio activation and test-only rusqlite were added to the existing crate direction. No network services, external deployment or reusable environment publication were introduced.
+
+## Task 5 DNS transport contracts
+
+Task 5 implements the DNS library service only; the binary and supervisor integration stay in Task 8.
+
+| Decision | Selected behavior and rationale | Tests |
+| --- | --- | --- |
+| Lifecycle | Shared core service status/readiness/failure types carry transport/address information without a back dependency. Start binds UDP and TCP before reporting ready; a second-bind failure releases the first socket. Explicit cancellation/owner drop stops listeners and cancels/joins all client/upstream work. Per-query errors do not fail the listener; fatal listener/task errors report Failed. | Ready ports, bind failure/release, monitor status, idle/partial TCP and pending upstream shutdown. |
+| DNS grammar | Accept one standard QUERY question, including non-A/AAAA record types and non-hostname DNS labels. Drop packets shorter than a header and received responses; malformed complete queries get FORMERR. Unsupported opcodes, zone transfers and signed-message authentication get NOTIMP. Validate the full frame, including trailing bytes and compression errors. Unsupported EDNS version gets BADVERS. | Malformed/short/compressed packets, query/response distinction, unsupported operation, EDNS. |
+| Domain matching | DNS wire names use label boundaries and ASCII case folding, matching IDNA A-label rules. Opaque/non-hostname labels can still be subdomains of a valid wildcard base; add a narrow core wildcard-base membership query rather than interpreting DNS binary labels as URL hostnames. Root/other permitted DNS names are forwarded. Only domain rules are consulted; URL-only hosts resolve. | Exact/apex/nested wildcard, underscore/binary-label descendants, IDNA, root/non-address queries, URL-only host. |
+| Synthetic replies | Preserve ID, opcode, question, RD and CD. Set QR/RA; clear AA/AD/TC; NXDOMAIN has no answers or invented SOA. Echo EDNS version 0 with DO and bounded payload, but not arbitrary options. Policy unavailable or exhausted upstreams produce SERVFAIL. | Flags/counts, EDNS and unavailable policy. |
+| Association and forwarding | Each request gets an isolated connected upstream UDP socket or TCP connection and a fresh random transaction ID; restore the client's ID on return. Accept only matching QR/opcode/question name/type/class/ID from the configured peer. Ignore malformed/unrelated responses within the existing deadline. Preserve valid upstream wire bytes except ID, including DNSSEC/unknown records. TCP clients use TCP upstream; truncated upstream UDP retries TCP at that same endpoint. | Concurrent colliding client IDs, wrong ID/name/type/class/opcode/source, A/AAAA, truncation fallback. |
+| Deadlines/failover | Try configured upstreams in order on timeout/transport failure, using one attempt deadline (including TCP fallback) and the total configured deadline. Valid DNS error replies are forwarded rather than retried. No cache or additional upstream transports. | Unresponsive/invalid upstream, ordered failover, bounded exhaustion, no public DNS. |
+| Bounds and TCP framing | Max wire frame is 65535 bytes; UDP responses respect the client's 512-byte or EDNS limit, capped at 1232. Oversized UDP answers get a valid TC reply, never byte slicing. Default 1024 in-flight requests/1024 TCP connections, configurable library limits; UDP overload drops packets and excess TCP connections close. TCP requests are processed sequentially per connection, each with a fresh policy read. Frame/read/write idle deadline defaults to 30s; cancellation interrupts it. | Oversized answer, two-byte framing, reused TCP with live updates, cancellation and limit validation. |
+
+The service captures one policy snapshot at query admission. In-flight queries may finish under that revision; each later query, including on an existing TCP connection, reevaluates current policy. DNS wire names are not passed through URL heuristics. Upstream fixture endpoints are local and tests use ephemeral ports. Actual DNS caching/bypass/client configuration and binary supervision remain later tasks.
+
+
+Task 5 rejects invalid question counts from the fixed header before full Hickory decoding, preventing attacker-controlled question-vector preallocation and oversized FORMERR replies. Hickory aliases numeric extended response code 16 as BADSIG when decoding; the EDNS BADVERS regression therefore checks wire value 16 and the OPT version rather than enum identity. Dependencies were activated with the existing selected versions and the lockfile updated intentionally; existing locked package versions remain unchanged.
+
+
+### Task 5 verification and review
+
+- Initial eleven integration tests failed against the API skeleton before implementation. Final DNS coverage passes seventeen local-fixture integration tests and one listener-fairness unit test. No test contacts public DNS.
+- Tests cover exact/apex/nested wildcards, IDNA and opaque labels, URL-only host isolation, A/AAAA and non-address/root queries, RD/CD/RA/AA/AD/EDNS behavior, strict framing/header/compression/trailing-byte errors, isolated response association (including wrong peer), colliding client IDs, truncation/TCP fallback, ordered failover/attempt-total deadlines, policy changes on reused TCP connections, unavailable policy, listener rollback, limits, idle/partial/pending work cancellation and owner loss.
+- Independent review found one Important issue: biased UDP polling could starve TCP. A controlled readiness regression reproduced the failure, then passed after fair UDP/TCP selection was introduced. Cancellation and finite completed-task reaping retain priority outside the fair listener group, avoiding both starvation and unbounded retained task results.
+- Strengthened the review's embedded-dot boundary regression: an opaque `a.b` wire label does not become two labels for exact rules, and `x.tracking` does not become a child of `tracking`. Corrected the duplicated architecture wording. No review findings remain outstanding for Task 5.
+- `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test -p nullgate-dns --test dns_proxy --locked`, `cargo test --workspace --locked`, rustdoc with warnings denied, whitespace/link and crate-direction checks pass. Workspace results: 69 behavioral tests and three compiled documentation examples. Existing locked dependency versions were retained while activating the chosen DNS dependencies.
+- Task 8 still owns executable startup/restart integration; production throughput, platform socket-failure behavior and deployed-client interoperability require later system/release validation. This task makes no claim of binary-level DNS enforcement or DNS caching.
+- Local commit only; no remote push or reusable environment changes/publication.

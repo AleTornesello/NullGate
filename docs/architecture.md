@@ -1,6 +1,6 @@
 # Architecture
 
-NullGate consists of four components, all written in Rust. The initial scaffold uses separate library crates and one executable. Task 1 selects runtime and interface contracts in [implementation decisions](implementation-decisions.md); the shared rule engine, TOML configuration, SQLite repository and live-policy coordinator are implemented, while network service behavior remains unimplemented.
+NullGate consists of four components, all written in Rust. The initial scaffold uses separate library crates and one executable. Task 1 selects runtime and interface contracts in [implementation decisions](implementation-decisions.md); the shared rule engine, TOML configuration, SQLite repository, live-policy coordinator and cancellable DNS library service are implemented; executable startup and HTTP/web services remain unimplemented.
 
 ## DNS proxy
 
@@ -8,7 +8,7 @@ The DNS proxy evaluates domain blocking rules. It returns NXDOMAIN for blocked n
 
 An exact rule applies only to the named domain. A wildcard rule such as `*.example.com` applies to subdomains, including nested subdomains, but excludes `example.com` itself.
 
-Initial DNS uses UDP and TCP, retries truncated UDP replies over TCP, and tries configured upstreams in order within bounded deadlines. No caching, DoH or DoT is selected. See decision T2.
+Initial DNS uses UDP and TCP, retries truncated UDP replies over TCP, and tries configured upstreams in order within bounded deadlines. No caching, DoH or DoT is selected. Task 5 implements these DNS transports with isolated associated upstream exchanges, request/connection bounds, cancellation and core lifecycle monitors. See decision T2 and the Task 5 protocol contracts.
 
 ## HTTP proxy
 

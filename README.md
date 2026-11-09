@@ -6,7 +6,7 @@ Run NullGate on the same machine as your browser or on a dedicated server servin
 
 ## Project status
 
-This repository contains the Rust workspace scaffold and the shared rule engine in `nullgate-core`, with tested parsing, normalization, domain/URL matching and HTTPS inspection-target selection, plus versioned TOML configuration, transactional SQLite blocklist storage and coordinated live policy snapshots. The executable currently reports scaffold status and exits; proxy services and the web interface are not implemented. Undecided features and operational details are marked **TBD**.
+This repository contains the Rust workspace scaffold and the shared rule engine in `nullgate-core`, with tested parsing, normalization, domain/URL matching and HTTPS inspection-target selection, plus versioned TOML configuration, transactional SQLite blocklist storage and coordinated live policy snapshots. The DNS library now serves filtered UDP/TCP queries with cancellation and lifecycle status reporting. The executable currently reports scaffold status and exits; HTTP proxy/web services and executable service wiring are not implemented. Undecided features and operational details are marked **TBD**.
 
 ## Features
 
@@ -70,9 +70,9 @@ cargo test --workspace --locked
 cargo doc --workspace --no-deps --locked
 ```
 
-The service libraries remain placeholders. The executable does not open network ports or perform filtering. Behavioral tests run with `cargo test -p nullgate-core --test rules --locked` and `cargo test -p nullgate-core --test storage --locked`; `cargo test -p nullgate-orchestrator --test policy_updates --locked` checks publication and failure recovery. The workspace test command includes all three suites. CI runs the commands above, with documentation warnings treated as errors.
+The HTTP and web libraries remain placeholders; DNS is implemented as a library service. The executable does not open network ports or perform filtering. Behavioral tests run with `cargo test -p nullgate-core --test rules --locked` and `cargo test -p nullgate-core --test storage --locked`; `cargo test -p nullgate-orchestrator --test policy_updates --locked` checks publication and failure recovery. `cargo test -p nullgate-dns --test dns_proxy --locked` checks DNS against local UDP/TCP fixtures. The workspace test command includes all four suites. CI runs the commands above, with documentation warnings treated as errors.
 
-Task 1 selected dependencies and matching contracts in [implementation decisions](docs/implementation-decisions.md). Task 2 activates `idna` in core; Task 3 adds rusqlite (bundled SQLite), Serde, TOML and safe configuration-path diagnostics. Task 4 activates Tokio in core and orchestration for subscriptions and the bounded writer. Other selected dependencies remain inactive until their owning tasks. The first release targets Linux x86_64; packaging remains to be decided.
+Task 1 selected dependencies and matching contracts in [implementation decisions](docs/implementation-decisions.md). Task 2 activates `idna` in core; Task 3 adds rusqlite (bundled SQLite), Serde, TOML and safe configuration-path diagnostics. Task 4 activates Tokio in core and orchestration for subscriptions and the bounded writer. Task 5 activates Hickory protocol support and tokio-util in DNS. Other selected dependencies remain inactive until their owning tasks. The first release targets Linux x86_64; packaging remains to be decided.
 
 
 The non-secret [example configuration](config/nullgate.example.toml) describes schema 1. `AppConfig::load` validates it and resolves relative data/TLS paths against its directory. The blocking repository stores named mixed lists, source memberships and latest import summaries with revision-checked transactions. Core supplies immutable policy subscriptions and an injectable management trait. The orchestrator’s bounded worker now coordinates storage, activation acknowledgements and complete snapshot publication. These remain library APIs: the scaffold executable does not load configuration, start services or publish rule changes yet.

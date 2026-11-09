@@ -9,3 +9,6 @@ workspace = true
 
 [dependencies]
 nullgate-core.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+hickory-proto.workspace = true

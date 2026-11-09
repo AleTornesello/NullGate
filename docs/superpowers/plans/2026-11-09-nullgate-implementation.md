@@ -107,7 +107,7 @@ Recommended starting stack: Tokio, Hickory DNS protocol support, Hyper, rustls/t
 
 ### 5. Implement the DNS proxy — P1
 
-- [ ] Serve blocked responses and forward permitted queries.
+- [x] Serve blocked responses and forward permitted queries. See [Task 5 transport contracts and validation](../../implementation-decisions.md#task-5-dns-transport-contracts).
 
 **Depends on:** Tasks 1 and 4.
 **Files:** `crates/nullgate-dns/src/{lib,server,upstream}.rs`; `crates/nullgate-dns/tests/dns_proxy.rs`.

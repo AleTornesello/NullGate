@@ -161,6 +161,15 @@ impl RuleSet {
         false
     }
 
+    /// Whether a wildcard rule names precisely this base (not the base's own ancestors).
+    /// DNS services use this after skipping an opaque/non-hostname leading DNS label.
+    pub fn blocks_subdomains_of(&self, base: &NormalizedHost) -> bool {
+        match base {
+            NormalizedHost::Dns(name) => self.subdomains.contains(name),
+            _ => false,
+        }
+    }
+
     /// Apply whole-domain blocking, then scheme/host/port/path URL blocking.
     pub fn blocks_url(&self, url: &NormalizedUrl) -> bool {
         self.blocks_domain(&url.host)

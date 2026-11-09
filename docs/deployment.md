@@ -78,3 +78,12 @@ A successful library save means the durable revision is published to all existin
 Future connection managers must register idempotent activation hooks and acknowledge required invalidations. While activation is pending or failed after commit, new policy reads are unavailable; a failure reports `CommittedNotActive` with its durable revision. Explicit recovery reloads durable state and repeats activation before publishing. Worker loss makes reads unavailable; an accepted request whose reply is lost has `OutcomeUnknown` and must be reconciled before retry. Repository writes outside the coordinator are unsupported while it owns the policy.
 
 Graceful shutdown drains commands ahead of its stop marker, makes read handles unavailable and joins the worker. Real proxy responses to unavailable policy and tunnel invalidation behavior remain their protocol/lifecycle tasks; Task 4 starts no listeners.
+
+
+## Implemented DNS library service (Task 5)
+
+`DnsService::start` accepts DNS configuration, a read-only policy subscription, resource limits and a cancellation token. Both UDP and TCP binds must succeed before readiness reports their actual bound addresses. Core lifecycle monitors expose Ready/Failed/Stopped to future supervision; per-query malformed packets and upstream failures do not tear down healthy listeners.
+
+The service returns NXDOMAIN for exact/wildcard domain blocks and forwards permitted queries over UDP/TCP to the configured upstreams. URL-only rules never block DNS. Each new question, including questions on a reused TCP connection, captures current policy; unavailable policy returns SERVFAIL. In-flight questions may finish under their admitted revision. Upstream timeouts/transport failures try subsequent servers within configured deadlines; truncated UDP retries TCP at the same server. There is no caching.
+
+UDP replies respect the client’s 512-byte/EDNS size with a 1232-byte cap. Larger answers return a valid truncated reply for TCP retry. TCP framing and idle I/O are bounded; cancellation joins active tasks and releases both listeners. The service’s default request/connection limits are 1024 each; runtime integration can map configured connection limits through `DnsOptions`. OpCode extensions, signed DNS authentication and zone transfers are unsupported. The executable still exits as a scaffold; Task 8 will integrate startup and supervision. All current DNS tests use local fixtures and ephemeral ports, not public DNS.

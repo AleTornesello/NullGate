@@ -79,7 +79,7 @@ Clients must trust NullGate's CA to use this feature. See [Deployment](deploymen
 
 ## Normalization contract
 
-Task 1 selects the matching behavior in [implementation decisions, M1–M12](implementation-decisions.md#matching-and-import-contracts-task-2). These contracts are implemented and tested in `nullgate-core` by Task 2. The DNS/HTTP services do not yet enforce them on live traffic.
+Task 1 selects the matching behavior in [implementation decisions, M1–M12](implementation-decisions.md#matching-and-import-contracts-task-2). These contracts are implemented and tested in `nullgate-core` by Task 2. Task 5 now enforces domain decisions in explicitly started DNS library listeners. HTTP filtering and executable service wiring remain later tasks.
 
 - Hostnames normalize to lowercase IDNA A-labels; one final dot is removed. Invalid labels are rejected. The same normalization applies to rules and requests.
 - URL matching includes scheme and effective port: omitted ports equal HTTP 80 or HTTPS 443; other ports remain distinct. Domain rules apply at all ports.
