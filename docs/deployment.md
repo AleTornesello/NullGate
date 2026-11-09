@@ -2,13 +2,13 @@
 
 ## Supported deployment models
 
-NullGate is intended to run either on the browser's own machine or on a dedicated server serving multiple devices. This describes deployment topology; supported operating systems and CPU architectures are TBD.
+NullGate is intended to run either on the browser's own machine or on a dedicated server serving multiple devices. The confirmed first release target is Linux x86_64 (`x86_64-unknown-linux-gnu`). The supported distro/glibc baseline and packaging remain prerequisites for Task 17; other platforms are not promised.
 
 All devices use the same blocking rules.
 
 ## Setup outline
 
-The following is the intended setup flow, not an executable installation guide. Binaries, commands, configuration keys, default ports, and service packaging are TBD.
+The following is the intended setup flow, not an executable installation guide. Binaries, exact CLI/configuration keys, default ports and service packaging are not implemented. Task 1 selects versioned TOML startup configuration and SQLite persistent state; see [implementation decisions](implementation-decisions.md).
 
 1. Install and start NullGate on the selected machine.
 2. Configure the DNS and HTTP proxy listen addresses and ports.
@@ -23,9 +23,9 @@ For a local installation, client settings point to the local NullGate instance. 
 
 ## HTTPS behavior
 
-NullGate inspects HTTPS only for domains derived from URL rules. Other HTTPS traffic passes through without decryption. Trusting the generated CA allows NullGate to inspect traffic for selected domains; distribute only the public certificate to clients.
+NullGate inspects HTTPS only for exact hosts derived from active HTTPS URL rules. HTTP-only URL rules do not select inspection. Other HTTPS traffic passes through without decryption. Trusting the generated CA allows NullGate to inspect traffic for selected domains; distribute only the public certificate to clients.
 
-Applications with certificate pinning or a separate trust store may require additional configuration or may be incompatible with inspection. Behavior when a client does not trust the CA, or when upstream certificate validation fails, is TBD.
+Applications with certificate pinning or a separate trust store may require additional configuration or may be incompatible with inspection. Missing client trust causes TLS failure. Invalid upstream chains or hostnames are rejected with no insecure passthrough fallback for an inspection target.
 
 Domain-only filtering does not require HTTPS path inspection.
 
@@ -40,15 +40,15 @@ Clients must actually route their relevant DNS and HTTP traffic through NullGate
 
 ## Details still to define
 
-- Installation artifacts and supported platforms.
+- Installation artifacts and Linux x86_64 distro/glibc baseline.
 - Release build and packaging workflow (scaffold build/check commands are in the README).
-- Listen addresses, ports, configuration format, and persistent data locations.
-- Web interface transport security and exposure settings.
-- First-run administrator setup and external identity integration.
-- Upstream DNS transports, timeouts, caching, and failover.
+- Exact listen defaults and persistent data paths; TOML startup config and SQLite are selected.
+- HTTPS certificate/proxy configuration: public/shared administration requires HTTPS; cleartext administration is loopback-only (T5).
+- Exact first-run provisioning CLI and OIDC provider registration/claim configuration.
+- Operator-facing DNS configuration: initial UDP/TCP, bounded timeout/failover and no caching are selected (T2).
 - Proxy authentication, if any; web interface authentication does not define client proxy authentication.
 - CA storage, backup, rotation, and recovery.
-- Logging, metrics, resource limits, health checks, and restart policy.
+- Operator-facing settings and guidance for tracing, bounds, health and restart behavior selected in implementation decisions. Metrics are process-lifetime aggregates with no request history.
 - Handling of client DNS caches, DNS-over-HTTPS, HTTP/3, and software bypassing configured proxies.
 
 ## Validation once an implementation exists

@@ -63,11 +63,11 @@ Query parameters are ignored during matching. Thus, `https://example.com/ads` al
 
 All path examples in this table use HTTPS and the exact host `example.com`. Query parameters do not change the results.
 
-Only `*` is currently specified as a path wildcard. Regular expressions, `?` wildcards, character classes, and wildcard escaping are not defined.
+Only raw `*` is a path wildcard. `%2A` remains literal encoded data. There is no regex, character-class, or wildcard-escape syntax; `?` starts the ignored query. Unsupported formats are reported as malformed.
 
 ## HTTPS inspection targets
 
-NullGate derives domains requiring TLS inspection from URL blocklists, without a separate inspection list. For example, `https://example.com/ads` requires inspection for `example.com`, allowing other paths such as `/news` unless another rule blocks them. It does not select `www.example.com` for inspection.
+NullGate derives domains requiring TLS inspection from active HTTPS URL rules, without a separate inspection list. HTTP-only URL rules do not select a host for HTTPS inspection. Selection applies to the exact host across CONNECT ports; URL blocking still checks the rule’s scheme and effective port. For example, `https://example.com/ads` requires inspection for `example.com`, allowing other paths such as `/news` unless another rule blocks them. It does not select `www.example.com` for inspection.
 
 Clients must trust NullGate's CA to use this feature. See [Deployment](deployment.md).
 
@@ -77,6 +77,15 @@ Clients must trust NullGate's CA to use this feature. See [Deployment](deploymen
 - HTTP/HTTPS: HTTP 403 Forbidden with an empty response body.
 - No block page is displayed.
 
-## Matching details still to define
+## Normalization contract
 
-Case and hostname normalization, internationalized domain names, explicit/default ports, percent-encoded paths, dot segments, whitespace handling, inline comments, literal asterisks, and duplicate rules are TBD. URL fragments are not transmitted in HTTP requests and cannot be used for proxy filtering.
+Task 1 selects the matching behavior in [implementation decisions, M1–M12](implementation-decisions.md#matching-and-import-contracts-task-2). These are requirements for the future rule engine, not implemented behavior.
+
+- Hostnames normalize to lowercase IDNA A-labels; one final dot is removed. Invalid labels are rejected. The same normalization applies to rules and requests.
+- URL matching includes scheme and effective port: omitted ports equal HTTP 80 or HTTPS 443; other ports remain distinct. Domain rules apply at all ports.
+- Paths are case-sensitive. Empty path means `/`; repeated and trailing slashes remain distinct. Percent hex is uppercased, only unreserved ASCII is decoded, then complete dot segments are removed. Encoded separators remain encoded; escapes are never recursively decoded.
+- Queries are ignored. Literal fragments in rules are malformed because requests do not transmit them. Userinfo, invalid escapes, controls and backslashes are rejected.
+- UTF-8 input accepts LF/CRLF and an initial BOM. Trim outer ASCII spaces/tabs; ignore blank lines and full-line `#` comments. Inline comments are unsupported.
+- Canonical duplicates are reported separately, while source memberships are preserved. Unsupported syntax is diagnosed rather than converted. Import and matching resource bounds are defined in M12.
+
+The decision table includes exact examples and test obligations for every boundary. URL rules never cause the DNS proxy to block their entire host.

@@ -45,6 +45,7 @@ https://news.example.com/sponsored/*
 - [Filtering rules](docs/filtering-rules.md): blocklist format and matching examples.
 - [Administration](docs/administration.md): blocklists, authentication, roles, and certificates.
 - [Deployment](docs/deployment.md): local and shared-server operation, client configuration, and open decisions.
+- [Implementation plan](docs/superpowers/plans/2026-11-09-nullgate-implementation.md): prioritized tasks, dependencies, and acceptance checks.
 
 ## Development
 
