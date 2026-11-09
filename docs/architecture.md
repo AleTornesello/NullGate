@@ -1,6 +1,6 @@
 # Architecture
 
-NullGate consists of four components, all written in Rust. The initial scaffold uses separate library crates and one executable. Task 1 selects runtime and interface contracts in [implementation decisions](implementation-decisions.md); service behavior remains unimplemented.
+NullGate consists of four components, all written in Rust. The initial scaffold uses separate library crates and one executable. Task 1 selects runtime and interface contracts in [implementation decisions](implementation-decisions.md); the shared core rule engine is implemented, while service behavior remains unimplemented.
 
 ## DNS proxy
 
@@ -50,4 +50,4 @@ Selected stack: Tokio, Hickory protocol support, Hyper, rustls/tokio-rustls, rcg
 - Each service crate → `nullgate-core`.
 - `nullgate-core` has no internal workspace dependencies; third-party libraries may provide normalization, configuration and storage.
 
-These manifest dependencies reserve the component boundaries. No service wiring or public component API is implemented yet. See the [README](../README.md#development) for build and check commands.
+These manifest dependencies reserve the component boundaries. Core now exposes typed normalization, import reports and immutable matching APIs. Service wiring remains unimplemented. See the [README](../README.md#development) for build and check commands.

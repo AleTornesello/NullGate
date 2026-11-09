@@ -1,3 +1,9 @@
-//! Shared rules, configuration, and domain types for NullGate.
+//! Shared, deterministic rule parsing and matching for NullGate.
 //!
-//! This crate reserves the component boundary; behavior is not implemented yet.
+//! Parsing performs no I/O. Domain, URL and inspection indexes remain separate.
+
+mod matching;
+mod rules;
+
+pub use matching::{CompileError, RuleSet};
+pub use rules::*;

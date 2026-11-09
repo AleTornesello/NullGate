@@ -6,7 +6,7 @@ Run NullGate on the same machine as your browser or on a dedicated server servin
 
 ## Project status
 
-This repository contains the initial Rust workspace scaffold and documentation of the intended behavior. The executable currently reports scaffold status and exits; proxy services and the web interface are not implemented. Undecided features and operational details are marked **TBD**.
+This repository contains the Rust workspace scaffold and the shared rule engine in `nullgate-core`, with tested parsing, normalization, domain/URL matching and HTTPS inspection-target selection. The executable currently reports scaffold status and exits; proxy services and the web interface are not implemented. Undecided features and operational details are marked **TBD**.
 
 ## Features
 
@@ -70,6 +70,6 @@ cargo test --workspace --locked
 cargo doc --workspace --no-deps --locked
 ```
 
-The libraries contain documentation-only placeholders. The executable does not open network ports or perform filtering. There are no behavioral tests yet; the test command currently checks that the scaffold's test targets compile and run. CI runs the commands above, with documentation warnings treated as errors.
+The service libraries remain placeholders. The executable does not open network ports or perform filtering. Behavioral tests for the shared rule engine run with `cargo test -p nullgate-core --test rules --locked`; the workspace test command includes them. CI runs the commands above, with documentation warnings treated as errors.
 
-The scaffold uses only local workspace dependencies. Web frameworks, async runtimes, DNS/TLS libraries, supported deployment platforms, and release artifacts remain undecided.
+Task 1 selected dependencies and matching contracts in [implementation decisions](docs/implementation-decisions.md). Task 2 activates `idna` in core; other selected dependencies remain inactive until their owning tasks. The first release targets Linux x86_64; packaging remains to be decided.

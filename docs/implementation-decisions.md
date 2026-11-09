@@ -1,8 +1,8 @@
 # NullGate implementation decisions
 
-Date: 2026-11-09. Scope: Task 1 of [the implementation plan](superpowers/plans/2026-11-09-nullgate-implementation.md).
+Date: 2026-11-09. Scope: Task 1 decisions and Task 2 matching implementation from [the implementation plan](superpowers/plans/2026-11-09-nullgate-implementation.md).
 
-These are contracts for future implementation, not claims of working services. The four specification documents remain the requirements authority; this document resolves their implementation details. No application behavior is added in Task 1.
+These are implementation contracts, not claims of working proxy services. Task 2 implements the shared rule engine only. The four specification documents remain the requirements authority; this document resolves their implementation details. No application behavior is added in Task 1.
 
 ## Confirmed product choices
 
@@ -41,7 +41,7 @@ Do not apply WHATWG dot-segment/percent or host heuristics before these checks. 
 
 ### Shared API shape
 
-These are planned Rust contracts, not public declarations added in this task. Private fields and fallible constructors prevent unnormalized values reaching matching code.
+These Rust contracts were planned in Task 1 and are implemented in Task 2. Private fields and fallible constructors prevent unnormalized values reaching matching code.
 
 ```rust
 parse_blocklist(input: &str) -> ImportReport
@@ -53,7 +53,7 @@ RuleSet::blocks_url(&self, url: &NormalizedUrl) -> bool
 RuleSet::requires_inspection(&self, host: &NormalizedHost) -> bool
 ```
 
-`Rule` is `ExactDomain(NormalizedHost)`, `Subdomains(NormalizedHost)`, or `Url(UrlPattern)`. `NormalizedHost` distinguishes DNS, IPv4 and IPv6; domain-rule constructors admit DNS only. `NormalizedUrl` holds `HttpScheme`, host, effective `u16` port and canonical path. `UrlPattern` additionally carries wildcard tokens and the optional trailing-`/*` parent alternative. Normalizing a request never creates wildcard tokens.
+`Rule` is `ExactDomain(DomainName)`, `Subdomains(DomainName)`, or `Url(UrlPattern)`. `DomainName` is opaque and validated; `NormalizedHost` distinguishes DNS, IPv4 and IPv6. `NormalizedUrl` holds `HttpScheme`, host, effective `u16` port and canonical path. `UrlPattern` retains the canonical rule URL; `RuleSet::compile` produces wildcard tokens and the optional trailing-`/*` parent alternative. Normalizing a request never creates wildcard tokens.
 
 `ImportReport` carries accepted unique rules with original line numbers, malformed diagnostics (`line`, stable `code`, safe message), duplicate line references and ignored-line count. It does not persist or publish. Empty input is a valid empty report; mutation semantics distinguish explicit list clearing from protected remote refresh. The ingress layer enforces the byte limit before calling the parser. No DNS or network I/O occurs in these functions.
 
@@ -126,7 +126,7 @@ Compatibility results are recorded in the verification section after the probe. 
 - Ruling: use this file as Task 1's decision ledger; do not run task-completion scripts that would claim unimplemented behavioral tests passed — Task 1 is a contract review, not a behavior change — cost if wrong: future tasks must translate each test obligation into executable coverage.
 - Interface review: Tasks 2→3/4/5/6/13 share normalized types and separate domain/URL/inspection sets (M1–M12); Tasks 3→4→10/11 share revisions, provenance and commit/publication ordering (S3–S10); Tasks 4/7→13 share tunnel invalidation (S9); Tasks 9→10/12/14 share server-side role checks (T5–T6). These contracts address the plan's shared-interface gaps. No later task is started.
 
-## Verification
+## Task 1 verification
 
 - Crates.io stable-version/MSRV metadata reviewed for every dependency in the table. Rust 1.99.1 was installed under local scratch paths with no shell-profile changes.
 - An isolated scratch Cargo project activated all selected dependencies with the same versions/features as the workspace declarations, including OIDC without default transport features. `cargo check --manifest-path work/dependency-probe/Cargo.toml` passed on Rust 1.99.1, Linux x86_64. This establishes compilation compatibility, not integration or security correctness.
@@ -136,4 +136,28 @@ Compatibility results are recorded in the verification section after the probe. 
 - `Cargo.lock` is unchanged: unused workspace dependency declarations do not activate packages. Service crates and application sources are unchanged. Scratch artifacts are retained outside the repository under `/workspace/work/nullgate-task1/` after validation; probe paths above show their location when run.
 - Task 1 is complete as a decision/dependency-selection task. Tasks 2–17 have not started. No environment configuration was published, no changes were pushed, and pre-existing README/plan edits were preserved.
 
-Future behavioral tests listed above do not exist yet and are not claimed to pass.
+At Task 1 completion, behavioral tests did not exist; Task 2 results are recorded below.
+
+## Task 2 matching clarifications and implementation record
+
+Task 2 implements only parsing, normalization, compilation and matching. Before implementation, the following gaps in the planned APIs were resolved:
+
+| Decision | Resolution and rationale | Tests |
+| --- | --- | --- |
+| Safe domain construction | Domain variants carry an opaque `DomainName`, not arbitrary `NormalizedHost`, so callers cannot construct IP domain rules. `NormalizedHost` distinguishes DNS/IPv4/IPv6. `Rule::parse` is the fallible single-rule constructor. Single-label DNS names are accepted. IDNA maps Unicode dot separators before removing one root dot; numeric-final-label names and alternative numeric IP spellings are rejected to prevent downstream URL reinterpretation. Only raw canonical dotted IPv4 is accepted as IPv4; IPv6 host input is bracketed. | Host validation, IDNA, numeric hosts and IP-domain rejection. |
+| Domain versus URL checks | `blocks_domain` consults domain rules only. `blocks_url` combines domain blocking with matching URL rules. `requires_inspection` selects exact HTTPS-rule hosts but returns false for an already domain-blocked host, which must be rejected before decryption. | DNS isolation, domain precedence, inspection selection. |
+| Query and path grammar | Strip queries without decoding or validating their percent escapes; raw whitespace/controls/backslashes and literal fragments are rejected anywhere in the URL, including query text. Accept RFC 3986 path characters plus raw Unicode (UTF-8 encoded); reject other raw ASCII delimiters, including brackets. Consecutive stars remain distinct canonical rules but compile to one wildcard token; wildcard matching uses bytes, as M12 specifies. Dot segments normalize before wildcard compilation, including when removing a segment containing `*`. | Query boundary, invalid URLs, canonical path and wildcard tables. |
+| Port syntax | Ports contain ASCII decimal digits only; leading zeroes normalize to the same effective port. Generic authority parsing is available with an optional default port; absence of a default requires an explicit port (CONNECT). | Port and CONNECT-authority tests. |
+| Import resource errors | Parser additionally rejects bodies above 4 MiB with report-level `fatal_error` and no partial accepted output; `&str` guarantees valid UTF-8. Line limits count raw UTF-8 bytes excluding LF/CRLF and the initial BOM, before trimming or comment handling. Lone CR is malformed. Deduplication is per parse call; storage/provenance stays in Task 3. | Input limits, line numbering, empty and mixed reports. |
+| Compilation bounds | Enforce 100,000 distinct canonical rules, counting only unique rules. Keep exact/suffix domain indexes and URL patterns grouped by scheme/host/effective port; inspection hosts have a separate index. Immutable matching uses no I/O. Iterative last-star wildcard matching has O(pattern × path) worst-case work and constant scratch space. | Compile limit, duplicate union, adversarial wildcard and exhaustive small-case comparison. |
+
+These are technical rulings within Task 1's matching contract; no additional product choice blocks Task 2. Their tradeoff is strict rejection of ambiguous host/URL input rather than browser-specific reinterpretation. The shared API is finalized in `nullgate-core` rustdoc. Later tasks must enforce protocol-specific status codes (such as HTTP 414); the engine returns typed normalization errors only.
+
+
+### Task 2 validation
+
+- Initial integration tests failed for missing APIs, then all 16 behavioral tests failed against the API skeleton before implementation. They passed after implementing the engine.
+- The final rule suite passes 17 tests, including 41,261 exhaustive pattern/path comparisons against an independent dynamic-programming oracle, long adversarial patterns, unique-rule capacity, import size boundaries and all filtering examples.
+- Formatting, workspace Clippy (`--all-targets --locked -- -D warnings`), the focused `nullgate-core --test rules` suite, workspace tests and rustdoc with warnings denied pass on Rust 1.99.1.
+- An independent read-only review found no correctness blockers; a separate RFC 3986 oracle agreed with dot-segment handling for 21,844 absolute paths. API documentation was corrected to distinguish canonical rule storage from compiled wildcard tokens.
+- Activated only `idna` in core and updated `Cargo.lock`. No persistence, proxies, policy publication, authentication or other later-task behavior is implemented. Protocol layers still own invalid-request responses and enforcement on live traffic.

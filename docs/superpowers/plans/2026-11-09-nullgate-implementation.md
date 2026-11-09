@@ -71,7 +71,7 @@ Recommended starting stack: Tokio, Hickory DNS protocol support, Hyper, rustls/t
 
 ### 2. Implement parsing, verification, and matching — P0
 
-- [ ] Build the shared rule engine.
+- [x] Build the shared rule engine. See [Task 2 matching clarifications and validation](../../implementation-decisions.md#task-2-matching-clarifications-and-implementation-record).
 
 **Depends on:** Task 1's matching decisions.
 **Files:** `crates/nullgate-core/src/{lib,rules,matching}.rs`; `crates/nullgate-core/tests/rules.rs`.
