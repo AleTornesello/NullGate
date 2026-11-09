@@ -24,7 +24,7 @@ use std::{
 };
 use tokio::{
     net::TcpListener,
-    sync::Semaphore,
+    sync::{OwnedSemaphorePermit, Semaphore},
     task::{JoinHandle, JoinSet},
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -53,6 +53,7 @@ pub struct HttpService {
     monitor: ServiceMonitor,
     cancel: CancellationToken,
     worker: Option<JoinHandle<Result<(), ServiceFailure>>>,
+    tunnels: crate::TunnelControl,
 }
 impl HttpService {
     pub async fn start(
@@ -111,14 +112,18 @@ impl HttpService {
         let cancel = cancel.child_token();
         let token = cancel.clone();
         let tracker = TaskTracker::new();
+        let tunnels = crate::TunnelControl::default();
         let state = Arc::new(State {
+            tunnels: tunnels.clone(),
+            shutdown: token.clone(),
             policy,
             requests: Arc::new(Semaphore::new(options.max_requests)),
             options,
             tracker: tracker.clone(),
         });
         let worker = tokio::spawn(async move {
-            let result = serve(listener, state, token).await;
+            let result = serve(listener, state, token.clone()).await;
+            token.cancel();
             tracker.close();
             tracker.wait().await;
             status.send_replace(match result {
@@ -132,7 +137,17 @@ impl HttpService {
             monitor,
             cancel,
             worker: Some(worker),
+            tunnels,
         })
+    }
+    pub fn tunnels(&self) -> crate::TunnelControl {
+        self.tunnels.clone()
+    }
+    pub fn capabilities(&self) -> crate::HttpCapabilities {
+        crate::HttpCapabilities {
+            https_connect_passthrough: true,
+            https_url_filtering: false,
+        }
     }
     pub fn local_addr(&self) -> SocketAddr {
         self.address
@@ -180,6 +195,8 @@ fn failure(
     }
 }
 struct State {
+    tunnels: crate::TunnelControl,
+    shutdown: CancellationToken,
     policy: PolicySubscription,
     requests: Arc<Semaphore>,
     options: HttpOptions,
@@ -214,16 +231,28 @@ async fn serve(
                 };
                 let state = state.clone();
                 clients.spawn(async move {
-                    let _permit = permit;
-                    let heads = Arc::new(Mutex::new(VecDeque::new()));
-                    let io = GuardedIo::new(stream, heads.clone());
-                    let deadline = state.options.request_header_timeout;
-                    let service = service_fn(move |request| handle(request, state.clone(), heads.clone()));
-                    let mut builder = hyper::server::conn::http1::Builder::new();
-                    builder.timer(TokioTimer::new()).header_read_timeout(deadline)
-                        .max_headers(100).max_buf_size(32768);
-                    // Malformed peer traffic ends this connection, not the listener.
-                    let _ = builder.serve_connection(TokioIo::new(io), service).await;
+                    let lifetime = crate::tunnel::ConnectionLifetime::default();
+                    let closed = lifetime.driver_guard();
+                    {
+                        let permit = Arc::new(permit);
+                        let heads = Arc::new(Mutex::new(VecDeque::new()));
+                        let io = GuardedIo::new(stream, heads.clone());
+                        let deadline = state.options.request_header_timeout;
+                        let connection_lifetime = lifetime.clone();
+                        let service = service_fn(move |request| {
+                            handle(request, state.clone(), heads.clone(), permit.clone(), connection_lifetime.clone())
+                        });
+                        let mut builder = hyper::server::conn::http1::Builder::new();
+                        builder.timer(TokioTimer::new()).header_read_timeout(deadline)
+                            .max_headers(100).max_buf_size(32768);
+                        // Drop Hyper's IO/service before acknowledging driver completion.
+                        tokio::select! {
+                            biased;
+                            _ = lifetime.cancel.cancelled() => {},
+                            _ = builder.serve_connection(TokioIo::new(io), service).with_upgrades() => {},
+                        }
+                    }
+                    drop(closed);
                 });
             }
         }
@@ -231,7 +260,7 @@ async fn serve(
     clients.shutdown().await;
     result
 }
-fn local(status: StatusCode, close: bool) -> Response<ProxyBody> {
+pub(crate) fn local(status: StatusCode, close: bool) -> Response<ProxyBody> {
     let mut response = Response::new(ProxyBody::empty());
     *response.status_mut() = status;
     response.headers_mut().insert(
@@ -250,6 +279,8 @@ async fn handle(
     request: Request<Incoming>,
     state: Arc<State>,
     heads: Heads,
+    connection: Arc<OwnedSemaphorePermit>,
+    lifetime: crate::tunnel::ConnectionLifetime,
 ) -> Result<Response<ProxyBody>, Infallible> {
     let ingress = heads.lock().unwrap().pop_front();
     let raw = match ingress {
@@ -258,8 +289,27 @@ async fn handle(
         None => return Ok(local(StatusCode::BAD_REQUEST, true)),
     };
     let close = !request.body().is_end_stream();
-    if request.method() == Method::CONNECT || request.headers().contains_key(hyper::header::UPGRADE)
-    {
+    if request.method() == Method::CONNECT {
+        let Ok(permit) = state.requests.clone().try_acquire_owned() else {
+            return Ok(local(StatusCode::SERVICE_UNAVAILABLE, true));
+        };
+        return Ok(crate::tunnel::handle(
+            request,
+            &raw,
+            crate::tunnel::TunnelContext {
+                control: &state.tunnels,
+                policy: state.policy.clone(),
+                options: &state.options,
+                tracker: &state.tracker,
+                shutdown: state.shutdown.clone(),
+                request: permit,
+                connection,
+                lifetime,
+            },
+        )
+        .await);
+    }
+    if request.headers().contains_key(hyper::header::UPGRADE) {
         return Ok(local(StatusCode::NOT_IMPLEMENTED, true));
     }
     if forward::via_loop(request.headers()) {

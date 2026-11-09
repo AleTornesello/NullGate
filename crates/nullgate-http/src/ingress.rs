@@ -33,6 +33,7 @@ enum State {
     DataEnd(u8),
     Trailers { line: Vec<u8>, total: usize },
     Closed,
+    Tunnel,
 }
 pub(crate) struct GuardedIo {
     socket: TcpStream,
@@ -67,6 +68,11 @@ impl GuardedIo {
         while cursor < input.len() {
             match std::mem::replace(&mut self.state, State::Closed) {
                 State::Closed => break,
+                State::Tunnel => {
+                    out.extend_from_slice(&input[cursor..]);
+                    self.state = State::Tunnel;
+                    break;
+                }
                 State::Head(mut head) => {
                     let byte = input[cursor];
                     cursor += 1;
@@ -248,7 +254,9 @@ fn parse_head(bytes: &[u8]) -> Result<(String, State), StatusCode> {
     if chunked && length.is_some() {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let state = if chunked {
+    let state = if request.method == Some("CONNECT") {
+        State::Tunnel
+    } else if chunked {
         State::Size(Vec::new())
     } else {
         match length {
@@ -288,7 +296,9 @@ impl AsyncRead for GuardedIo {
                 Poll::Ready(Ok(())) => {}
             }
             if read.filled().is_empty() {
-                return if matches!(&this.state,State::Head(head)if head.bytes.is_empty()) {
+                return if matches!(&this.state,State::Head(head)if head.bytes.is_empty())
+                    || matches!(this.state, State::Tunnel)
+                {
                     Poll::Ready(Ok(()))
                 } else {
                     Poll::Ready(Err(io::ErrorKind::UnexpectedEof.into()))

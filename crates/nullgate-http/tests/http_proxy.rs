@@ -409,7 +409,7 @@ async fn malformed_authorities_and_unsupported_transports_never_connect() {
     for request in [
         "GET / HTTP/1.1\r\nConnection: close\r\n\r\n",
         "GET http://example.invalid/ HTTP/1.1\r\nHost: example.invalid\r\nHost: example.invalid\r\nConnection: close\r\n\r\n",
-        "CONNECT example.invalid:443 HTTP/1.1\r\nHost: example.invalid:443\r\nConnection: close\r\n\r\n",
+        "CONNECT example.invalid HTTP/1.1\r\nHost: example.invalid:443\r\nConnection: close\r\n\r\n",
         "GET http://example.invalid/ HTTP/1.1\r\nHost: example.invalid\r\nConnection: Upgrade, close\r\nUpgrade: websocket\r\n\r\n",
     ] {
         let status = raw_status(&raw(proxy.local_addr(), request.as_bytes()).await);

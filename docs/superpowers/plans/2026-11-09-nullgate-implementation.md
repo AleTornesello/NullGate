@@ -131,7 +131,7 @@ Recommended starting stack: Tokio, Hickory DNS protocol support, Hyper, rustls/t
 
 ### 7. Add HTTPS CONNECT passthrough — P1
 
-- [ ] Tunnel permitted HTTPS traffic without decryption.
+- [x] Tunnel permitted HTTPS traffic without decryption. See [Task 7 contracts and validation](../../implementation-decisions.md#task-7-connect-passthrough-contracts).
 
 **Depends on:** Task 6.
 **Files:** `crates/nullgate-http/src/tunnel.rs`; `crates/nullgate-http/tests/connect_proxy.rs`.
