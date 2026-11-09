@@ -1,6 +1,6 @@
 # Architecture
 
-NullGate consists of four components, all written in Rust. The initial scaffold uses separate library crates and one executable. Task 1 selects runtime and interface contracts in [implementation decisions](implementation-decisions.md); the shared rule engine, TOML configuration and blocking SQLite repository are implemented, while service behavior remains unimplemented.
+NullGate consists of four components, all written in Rust. The initial scaffold uses separate library crates and one executable. Task 1 selects runtime and interface contracts in [implementation decisions](implementation-decisions.md); the shared rule engine, TOML configuration, SQLite repository and live-policy coordinator are implemented, while network service behavior remains unimplemented.
 
 ## DNS proxy
 
@@ -33,7 +33,7 @@ The orchestrator is responsible for:
 - Verifying blocking rules.
 - Restarting failed proxies automatically.
 
-Saved rule changes commit transactionally to SQLite, then publish one immutable versioned snapshot through a core-owned subscription. Success follows publication and required tunnel invalidation acknowledgements; in-flight work has the boundary defined by decisions S7–S9. Stale edits conflict. Post-commit activation failure is reported distinctly from an unsaved edit. Services share readiness/cancellation/failure contracts; restart backoff is bounded (T1).
+Saved rule changes commit transactionally to SQLite, then publish one immutable versioned snapshot through a core-owned subscription. Task 4 implements a bounded serialized writer and an immutable active-or-unavailable watch state, with injectable idempotent activation acknowledgements. Success follows publication and required tunnel invalidation acknowledgements; in-flight work has the boundary defined by decisions S7–S9. Stale edits conflict. Post-commit activation failure is reported distinctly from an unsaved edit. Services share readiness/cancellation/failure contracts; restart backoff is bounded (T1).
 
 Malformed imported rules are reported and ignored; valid rules are accepted.
 
@@ -50,4 +50,4 @@ Selected stack: Tokio, Hickory protocol support, Hyper, rustls/tokio-rustls, rcg
 - Each service crate → `nullgate-core`.
 - `nullgate-core` has no internal workspace dependencies; third-party libraries may provide normalization, configuration and storage.
 
-These manifest dependencies reserve the component boundaries. Core now exposes typed normalization, import reports, immutable matching, startup configuration and transactional blocklist repository APIs. Service wiring remains unimplemented. See the [README](../README.md#development) for build and check commands.
+These manifest dependencies reserve the component boundaries. Core now exposes typed normalization, import reports, immutable matching, startup configuration and transactional blocklist repository and policy read/write APIs. Orchestration implements the core-owned object-safe management trait; service crates receive subscriptions and never depend on the orchestrator. Service wiring remains unimplemented. See the [README](../README.md#development) for build and check commands.

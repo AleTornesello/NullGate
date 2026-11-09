@@ -66,4 +66,15 @@ Relative data and TLS-file references resolve against the configuration file’s
 
 The core repository uses SQLite WAL with FULL synchronous mode and transactional schema version 1. Reopening validates stored rules and provenance; unsupported schemas/corruption fail instead of resetting data. Newly created directories/files are private on Unix (0700/0600). Existing directory permissions remain the operator’s responsibility. Do not copy only an active WAL database file as a backup; release backup/restore procedures remain part of Task 17.
 
-Repository methods are blocking. Async orchestration must run them on its bounded storage worker, then publish the returned compiled policy in Task 4. A storage commit by itself does not mean running proxies have updated.
+Repository methods are blocking. Task 4 now runs them on a bounded storage worker and publishes the returned complete compiled policy before acknowledging saves. A storage commit by itself does not mean running proxies have updated.
+
+
+## Implemented policy coordination API (Task 4)
+
+`PolicyCoordinator::open` opens/loads the repository on its dedicated blocking task. Applications choose the queue bound (normally `limits.storage_queue_capacity`) and an activation deadline (default 5s). The binary does not invoke this API yet. Runtime startup remains Task 8.
+
+A successful library save means the durable revision is published to all existing read handles. Readers capture one immutable snapshot per request; watch notifications can coalesce, so the latest complete revision is authoritative. A retained old snapshot is only for work admitted before a change. Failed validation/writes preserve the active snapshot. Expected-revision conflicts are explicit; the coordinator never automatically retries an edit.
+
+Future connection managers must register idempotent activation hooks and acknowledge required invalidations. While activation is pending or failed after commit, new policy reads are unavailable; a failure reports `CommittedNotActive` with its durable revision. Explicit recovery reloads durable state and repeats activation before publishing. Worker loss makes reads unavailable; an accepted request whose reply is lost has `OutcomeUnknown` and must be reconciled before retry. Repository writes outside the coordinator are unsupported while it owns the policy.
+
+Graceful shutdown drains commands ahead of its stop marker, makes read handles unavailable and joins the worker. Real proxy responses to unavailable policy and tunnel invalidation behavior remain their protocol/lifecycle tasks; Task 4 starts no listeners.

@@ -95,7 +95,7 @@ Recommended starting stack: Tokio, Hickory DNS protocol support, Hyper, rustls/t
 
 ### 4. Publish live rulesets safely — P0
 
-- [ ] Coordinate validation, persistence, and immediate publication.
+- [x] Coordinate validation, persistence, and immediate publication. See [Task 4 contracts and validation](../../implementation-decisions.md#task-4-policy-publication-contracts).
 
 **Depends on:** Tasks 2–3.
 **Files:** `crates/nullgate-core/src/policy.rs`; `crates/nullgate-orchestrator/src/{lib,policy}.rs`; `crates/nullgate-orchestrator/tests/policy_updates.rs`.

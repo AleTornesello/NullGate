@@ -12,3 +12,7 @@ nullgate-core.workspace = true
 nullgate-dns.workspace = true
 nullgate-http.workspace = true
 nullgate-web.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+rusqlite.workspace = true

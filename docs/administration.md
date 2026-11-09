@@ -60,4 +60,11 @@ Core stores named lists and independent Manual/File/Remote source memberships; t
 
 Each source retains its latest import counts, last attempt/success timestamps and up to 1000 safe malformed-line diagnostics. The immediate commit result includes the complete parser report. Batch accepted counts differ from membership additions when importing rules already present in that source. Cross-source duplicates remain independent, so removing a remote source cannot remove a manual rule.
 
-The repository requires the caller’s expected revision for every edit. Validation, capacity, busy, read-only and transactional write failures leave prior state usable; no partial valid subset is committed if the database write itself fails. Live publication and HTTP outcome mapping remain Tasks 4/10/11.
+The repository requires the caller’s expected revision for every edit. Validation, capacity, busy, read-only and transactional write failures leave prior state usable; no partial valid subset is committed if the database write itself fails. Task 4 now implements library-level publication; HTTP outcome mapping remains Tasks 10/11.
+
+
+## Policy save coordination (Task 4)
+
+The orchestrator now implements the core management interface as a bounded, serialized queue. Successful saves return the published snapshot and full parser diagnostics; malformed lines do not prevent valid entries from becoming active. Queue-full and already-stopped requests are rejected before acceptance. Cancelling a request after acceptance does not cancel its durable update/publication; reconcile its revision before retrying.
+
+Pre-commit storage failure retains the active policy. Post-commit activation error, panic or deadline expiry reports the committed revision as inactive, blocks new policy admissions and refuses further edits until explicit recovery succeeds. These are implemented library outcomes; HTTP routes and connection invalidation consumers remain later tasks.
