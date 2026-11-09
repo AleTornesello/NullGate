@@ -1,6 +1,6 @@
 # Architecture
 
-NullGate consists of four components, all written in Rust. The initial scaffold uses separate library crates and one executable. Task 1 selects runtime and interface contracts in [implementation decisions](implementation-decisions.md); the shared rule engine, TOML configuration, SQLite repository, live-policy coordinator and cancellable DNS library service are implemented; executable startup and HTTP/web services remain unimplemented.
+NullGate consists of four components, all written in Rust. The initial scaffold uses separate library crates and one executable. Task 1 selects runtime and interface contracts in [implementation decisions](implementation-decisions.md); the shared rule engine, TOML configuration, SQLite repository, live-policy coordinator and cancellable DNS/unencrypted HTTP library services are implemented; executable startup, CONNECT/TLS and web services remain unimplemented.
 
 ## DNS proxy
 

@@ -119,7 +119,7 @@ Recommended starting stack: Tokio, Hickory DNS protocol support, Hyper, rustls/t
 
 ### 6. Implement unencrypted HTTP filtering — P1
 
-- [ ] Forward allowed HTTP traffic and reject blocked requests.
+- [x] Forward allowed HTTP traffic and reject blocked requests. See [Task 6 contracts and validation](../../implementation-decisions.md#task-6-unencrypted-http-contracts).
 
 **Depends on:** Tasks 1 and 4.
 **Files:** `crates/nullgate-http/src/{lib,server,forward}.rs`; `crates/nullgate-http/tests/http_proxy.rs`.

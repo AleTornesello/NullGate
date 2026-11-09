@@ -46,6 +46,8 @@ openidconnect = { version = "=4.1.0", default-features = false }
 
 serde_path_to_error = "=0.1.20"
 
+httparse = "=1.10.1"
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
