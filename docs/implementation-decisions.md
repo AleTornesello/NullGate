@@ -1,6 +1,6 @@
 # NullGate implementation decisions
 
-Date: 2026-11-09. Scope: Task 1 decisions and Task 2 matching implementation from [the implementation plan](superpowers/plans/2026-11-09-nullgate-implementation.md).
+Date: 2026-11-09. Scope: Tasks 1–3 contracts and implementation from [the implementation plan](superpowers/plans/2026-11-09-nullgate-implementation.md).
 
 These are implementation contracts, not claims of working proxy services. Task 2 implements the shared rule engine only. The four specification documents remain the requirements authority; this document resolves their implementation details. No application behavior is added in Task 1.
 
@@ -113,7 +113,7 @@ Compatibility results are recorded in the verification section after the probe. 
 
 | Owner | Remaining detail | Current boundary |
 | --- | --- | --- |
-| Tasks 3, 9 | Exact local account CRUD/provisioning CLI and session lifetimes | Default local login, explicit first admin, two roles, no default password are fixed; document CLI before implementing. |
+| Task 9 | Exact local account CRUD/provisioning CLI and session lifetimes | Default local login, explicit first admin, two roles, no default password are fixed; document CLI before implementing. |
 | Task 11 | Administrator-configured private remote-source exceptions, if wanted | Deny private destinations by default; no silent exception. |
 | Task 12 | CA/leaf lifetimes, renewal, backup and rotation UX | Generate locally, reuse, protect private key and never silently rotate. Ask product questions before choosing user-visible recovery behavior. |
 | Task 14 | Actual provider issuer/client registration and claim names | OIDC/PKCE and deny-unmapped are confirmed. Admin supplies deployment configuration, not secret values in chat. |
@@ -161,3 +161,33 @@ These are technical rulings within Task 1's matching contract; no additional pro
 - Formatting, workspace Clippy (`--all-targets --locked -- -D warnings`), the focused `nullgate-core --test rules` suite, workspace tests and rustdoc with warnings denied pass on Rust 1.99.1.
 - An independent read-only review found no correctness blockers; a separate RFC 3986 oracle agreed with dot-segment handling for 21,844 absolute paths. API documentation was corrected to distinguish canonical rule storage from compiled wildcard tokens.
 - Activated only `idna` in core and updated `Cargo.lock`. No persistence, proxies, policy publication, authentication or other later-task behavior is implemented. Protocol layers still own invalid-request responses and enforcement on live traffic.
+
+## Task 3 storage and configuration contracts
+
+These decisions resolve the storage/API gaps before implementation. They do not introduce live publication, network fetching or authentication behavior.
+
+| Decision | Selected contract and rationale | Tests |
+| --- | --- | --- |
+| Repository boundary | Blocking `BlocklistRepository` exposes a consistent `snapshot` and revision-checked `apply(Mutation)`. `SqliteRepository` has one mutable connection; all connections use an immediate transaction and revision CAS. Task 4 owns the bounded blocking-worker adapter and live publication; do not call this blocking API on an async reactor thread. A commit returns its validated candidate snapshot and compiled union, without a fallible read after commit. | Restart, independent handles, stale edits, atomic rollback. |
+| Lists and provenance | Stable monotonically allocated integer IDs; nonempty, already-trimmed names up to 128 UTF-8 bytes, no controls; list names are unique and case-sensitive. All lists are active. Sources are explicitly created as Manual, File (display filename) or Remote (HTTP(S) URL, no credentials/fragments). Imports target one source. Delete/clear operations are explicit and cascade only that list/source's memberships. | List CRUD, names, independent manual/file/remote memberships and deletion. |
+| Edits and refresh | Manual/file imports add; explicit `ReplaceEntries` replaces manual/file memberships (all-invalid replacement fails, empty/comment-only replacement can clear). Remote imports replace only their source when at least one valid rule is present. No-valid remote responses preserve entries and commit a `NoValidRules` attempt report; fetch failures can record metadata without changing memberships. Both advance the durable revision because source metadata changed. Later API code maps these outcomes to user-visible errors. | Partial-valid/empty/all-invalid/failed refresh, manual preservation, explicit replacement/clear. |
+| Stored rules and reports | Store canonical deduplication keys plus validated input spelling with ignored URL queries removed; reparse and verify the key on load. Retaining bounded original spelling avoids rejecting valid Unicode rules whose canonical percent-encoded form exceeds the raw-line limit. Per-source latest import summary includes counts, timestamps and up to 1,000 safe line diagnostics; the commit returns the complete parser report. No raw malformed lines or fetched documents are stored. | Unicode round-trip, canonical duplicates, reports across restart and corruption rejection. |
+| Atomicity and schema | SQLite schema version 1, foreign keys, WAL, FULL synchronous mode and a 100ms busy timeout. Migration is transactional; future schemas/corrupt data fail clearly, never reset. Build and compile a candidate before beginning the write transaction, then verify its base revision inside the transaction. Database errors roll back membership, metadata and revision together. | Migration/reopen, future schema, mid-write abort, busy/read-only failures, unchanged state. |
+| Startup configuration | Schema 1 TOML owns startup settings. Required DNS/HTTP/web listeners, ordered upstream socket addresses and data directory; local auth default, explicit `oidc`/`none` mode selection. Default DNS attempt/total deadlines 2,000/5,000ms. Limits configure future storage queue capacity (32) and connections (1,024); fixed rule-engine limits stay in core. Relative data/TLS paths resolve against the config directory. Listener port 0 is allowed for tests; upstream port 0/unspecified/multicast addresses are invalid. Overlapping TCP listeners fail validation; UDP/TCP DNS may share a port. Cleartext web binds loopback only; non-loopback web requires paired TLS file references. Provider/account/session implementation stays in Tasks 9/14. | Example config, defaults, restart load, invalid keys/types/version/cross-field settings, path resolution and secret-safe errors. |
+| Configuration diagnostics | Reject unknown fields at every level. Deserialize with `serde_path_to_error` 0.1.20 for key paths and TOML spans for line numbers; never include the untrusted value or source excerpt in errors. Cap config input at 64 KiB. TOML is loaded from disk; this task does not add a settings-write endpoint or mutate the executable. | Malformed syntax, field paths and sensitive-value redaction. |
+
+Parser accepted/duplicate counts describe the current batch; summary `added`/`removed` counts describe source membership changes, so reimporting an existing rule can accept it with zero additions. New database files use mode 0600 and newly created data directories use 0700 on Unix; existing directory permissions remain the operator’s responsibility. Resource limits are positive and at most 65535; DNS total timeout is at most 60000ms.
+
+The main tradeoffs are blocking storage until orchestration integrates it, latest-report retention instead of unlimited history, and strict rejection rather than silently repairing corrupt persisted state. Account provisioning and session decisions remain prerequisites for Task 9, not this storage task.
+
+
+### Task 3 verification and review follow-ups
+
+- Initial 13 storage/config tests failed against an API skeleton; implementation then passed them after a strict tagged-unit decoding fix. Added corruption/capacity coverage and an independently identified missing-field diagnostic regression. The final focused suite contains 16 tests; all pass, alongside the existing 17 rule tests and one compiled API documentation example.
+- Missing-field errors now recover only recognized schema identifiers, giving exact paths such as `schema_version`, `dns.udp_listen`, `auth.mode` and `web.tls.private_key_file`, with static messages and no supplied values. The regression was observed RED before the fix, then GREEN.
+- `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, focused storage tests, `cargo test --workspace --locked`, and rustdoc with warnings denied pass on Rust 1.99.1. Documentation-link, whitespace and dependency-scope checks pass.
+- Independent review found no critical transaction/import/reload defect. Its important missing-field diagnostic finding was fixed with regression coverage; no second review was substituted for verification.
+- Deferred minor: a concurrent first initializer can observe version 0, then another initializer's new tables, and misreport a healthy database as unsupported schema 0. Data remains intact; retrying after initialization succeeds. Revisit when supporting concurrent initialization or integrating the Task 4 worker.
+- Deferred minor: the second, in-transaction revision check is implemented and reviewed, but its exact preparation/commit interleaving lacks a direct deterministic regression. Add it with the Task 4 worker seam; current stale-revision and busy-writer tests cover the other paths.
+- Blocking-worker scheduling, live publication/activation recovery, HTTP fetch/SSRF behavior, authentication/TLS loading/startup, and physical power-loss/backup validation remain their owning tasks. A storage commit does not establish those guarantees.
+- No executable/service behavior changed; no later task, push or environment publication was performed.

@@ -6,7 +6,7 @@ Run NullGate on the same machine as your browser or on a dedicated server servin
 
 ## Project status
 
-This repository contains the Rust workspace scaffold and the shared rule engine in `nullgate-core`, with tested parsing, normalization, domain/URL matching and HTTPS inspection-target selection. The executable currently reports scaffold status and exits; proxy services and the web interface are not implemented. Undecided features and operational details are marked **TBD**.
+This repository contains the Rust workspace scaffold and the shared rule engine in `nullgate-core`, with tested parsing, normalization, domain/URL matching and HTTPS inspection-target selection, plus versioned TOML configuration and transactional SQLite blocklist storage. The executable currently reports scaffold status and exits; proxy services and the web interface are not implemented. Undecided features and operational details are marked **TBD**.
 
 ## Features
 
@@ -70,6 +70,9 @@ cargo test --workspace --locked
 cargo doc --workspace --no-deps --locked
 ```
 
-The service libraries remain placeholders. The executable does not open network ports or perform filtering. Behavioral tests for the shared rule engine run with `cargo test -p nullgate-core --test rules --locked`; the workspace test command includes them. CI runs the commands above, with documentation warnings treated as errors.
+The service libraries remain placeholders. The executable does not open network ports or perform filtering. Behavioral tests run with `cargo test -p nullgate-core --test rules --locked` and `cargo test -p nullgate-core --test storage --locked`; the workspace test command includes both. CI runs the commands above, with documentation warnings treated as errors.
 
-Task 1 selected dependencies and matching contracts in [implementation decisions](docs/implementation-decisions.md). Task 2 activates `idna` in core; other selected dependencies remain inactive until their owning tasks. The first release targets Linux x86_64; packaging remains to be decided.
+Task 1 selected dependencies and matching contracts in [implementation decisions](docs/implementation-decisions.md). Task 2 activates `idna` in core; Task 3 adds rusqlite (bundled SQLite), Serde, TOML and safe configuration-path diagnostics. Other selected dependencies remain inactive until their owning tasks. The first release targets Linux x86_64; packaging remains to be decided.
+
+
+The non-secret [example configuration](config/nullgate.example.toml) describes schema 1. `AppConfig::load` validates it and resolves relative data/TLS paths against its directory. The blocking repository stores named mixed lists, source memberships and latest import summaries with revision-checked transactions. These are core library APIs: the scaffold executable does not load configuration, start services or publish rule changes yet.

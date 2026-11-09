@@ -1,0 +1,25 @@
+# Startup configuration only; rule changes live in SQLite. No secrets are included.
+schema_version = 1
+data_dir = "../data"
+
+[dns]
+udp_listen = "127.0.0.1:5353"
+tcp_listen = "127.0.0.1:5353"
+upstreams = ["1.1.1.1:53", "9.9.9.9:53"]
+attempt_timeout_ms = 2000
+total_timeout_ms = 5000
+
+[http]
+listen = "127.0.0.1:8080"
+
+[web]
+listen = "127.0.0.1:8081"
+# Non-loopback web listeners require [web.tls] certificate_file/private_key_file.
+# TLS file values are references to protected files, never inline key material.
+
+[limits]
+storage_queue_capacity = 32
+max_connections = 1024
+
+[auth]
+mode = "local" # local (default), oidc, or explicitly none

@@ -52,3 +52,12 @@ The confirmed first dashboard shows aggregate allowed/blocked DNS and HTTP(S) co
 ## Save outcomes
 
 The future management API returns a policy revision and accepted/duplicate/malformed diagnostics. Concurrent stale edits return a conflict. Validation or storage failure before commit preserves the old policy. If durable commit succeeds but activation fails, the response explicitly identifies the committed revision as `committed_not_active`; affected traffic remains unavailable until recovery. A successful rule save means the complete revision is active, with in-flight request boundaries described in [implementation decisions](implementation-decisions.md#configuration-persistence-and-publication).
+
+
+## Implemented repository behavior (Task 3)
+
+Core stores named lists and independent Manual/File/Remote source memberships; there is no management UI yet. Manual/file imports add rules. Explicit replacement is separate from import; source/list removal and source clearing are explicit commands. Remote import replaces only its own memberships when valid rules are present. An empty/all-invalid response or recorded fetch failure preserves previous memberships while storing the attempt outcome and advancing the durable revision.
+
+Each source retains its latest import counts, last attempt/success timestamps and up to 1000 safe malformed-line diagnostics. The immediate commit result includes the complete parser report. Batch accepted counts differ from membership additions when importing rules already present in that source. Cross-source duplicates remain independent, so removing a remote source cannot remove a manual rule.
+
+The repository requires the caller’s expected revision for every edit. Validation, capacity, busy, read-only and transactional write failures leave prior state usable; no partial valid subset is committed if the database write itself fails. Live publication and HTTP outcome mapping remain Tasks 4/10/11.

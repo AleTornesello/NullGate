@@ -83,7 +83,7 @@ Recommended starting stack: Tokio, Hickory DNS protocol support, Hyper, rustls/t
 
 ### 3. Add configuration and durable blocklist storage — P0
 
-- [ ] Persist named mixed blocklists, settings, and source metadata.
+- [x] Persist named mixed blocklists, settings, and source metadata. See [Task 3 contracts and validation](../../implementation-decisions.md#task-3-storage-and-configuration-contracts) and the [example configuration](../../../config/nullgate.example.toml).
 
 **Depends on:** Tasks 1–2.
 **Files:** `crates/nullgate-core/src/{config,storage,blocklists}.rs`; `crates/nullgate-core/tests/storage.rs`; `config/nullgate.example.toml`.

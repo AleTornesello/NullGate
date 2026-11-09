@@ -8,7 +8,7 @@ All devices use the same blocking rules.
 
 ## Setup outline
 
-The following is the intended setup flow, not an executable installation guide. Binaries, exact CLI/configuration keys, default ports and service packaging are not implemented. Task 1 selects versioned TOML startup configuration and SQLite persistent state; see [implementation decisions](implementation-decisions.md).
+The following is the intended setup flow, not an executable installation guide. Binaries, exact CLI flags, runtime defaults and service packaging are not implemented. Core now loads the schema-1 configuration shown in the example below; the executable is not wired to it yet. Task 1 selects versioned TOML startup configuration and SQLite persistent state; see [implementation decisions](implementation-decisions.md).
 
 1. Install and start NullGate on the selected machine.
 2. Configure the DNS and HTTP proxy listen addresses and ports.
@@ -56,3 +56,14 @@ Clients must actually route their relevant DNS and HTTP traffic through NullGate
 Verify a permitted request, an exact domain block, a wildcard subdomain block, an exact HTTPS URL block, and a wildcard URL block. Confirm that queries are ignored, sibling URLs remain permitted, and unlisted HTTPS domains are not inspected. Also verify malformed-rule reporting, immediate rule updates, upstream DNS forwarding, access restrictions for Viewers, and failed-proxy restarts.
 
 These are acceptance scenarios for future tests; they have not been executed against an implementation.
+
+
+## Implemented configuration and storage APIs (Task 3)
+
+[config/nullgate.example.toml](../config/nullgate.example.toml) is a non-secret, loopback-only example with unprivileged ports. Its required startup settings include listener socket addresses, ordered DNS upstreams and a data directory. Local web authentication is the default; `oidc` and `none` select future authentication behavior only. Schema version and unknown fields are validated, and errors identify a field path/line without echoing its value.
+
+Relative data and TLS-file references resolve against the configuration file’s directory. The database path is `<data_dir>/nullgate.sqlite3`. DNS attempt/total deadlines default to 2000/5000ms. Cleartext administration binds loopback only; non-loopback web addresses require paired TLS file references. This validation does not read TLS keys or start a TLS service. Startup setting changes require rereading the configuration/restarting once Task 8 integrates startup.
+
+The core repository uses SQLite WAL with FULL synchronous mode and transactional schema version 1. Reopening validates stored rules and provenance; unsupported schemas/corruption fail instead of resetting data. Newly created directories/files are private on Unix (0700/0600). Existing directory permissions remain the operator’s responsibility. Do not copy only an active WAL database file as a backup; release backup/restore procedures remain part of Task 17.
+
+Repository methods are blocking. Async orchestration must run them on its bounded storage worker, then publish the returned compiled policy in Task 4. A storage commit by itself does not mean running proxies have updated.
