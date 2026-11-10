@@ -50,6 +50,14 @@ impl Application {
             config,
             auth,
             management: Arc::new(policy.clone()),
+            remote: Arc::new(crate::imports::RemoteService::new(
+                Arc::new(policy.clone()),
+                crate::imports::RemoteFetcher::new(
+                    Arc::new(crate::imports::PublicFetchPolicy),
+                    crate::imports::FetchOptions::default(),
+                )
+                .expect("valid default fetch bounds"),
+            )),
             policy: policy.subscribe(),
             tunnels,
         });
@@ -111,6 +119,7 @@ struct Services {
     config: AppConfig,
     auth: nullgate_web::AuthService,
     management: Arc<dyn PolicyManagement>,
+    remote: Arc<dyn nullgate_core::RemoteManagement>,
     policy: PolicySubscription,
     tunnels: TunnelControl,
 }
@@ -175,10 +184,11 @@ impl ProxyFactory for Services {
                     )
                     .await?,
                 )) as Box<dyn ManagedProxy>),
-                ServiceKind::Web => Ok(Box::new(Web(nullgate_web::WebService::start(
+                ServiceKind::Web => Ok(Box::new(Web(nullgate_web::WebService::start_with_remote(
                     self.config.web.clone(),
                     self.auth.clone(),
                     self.management.clone(),
+                    Some(self.remote.clone()),
                     limit,
                     cancel,
                 )

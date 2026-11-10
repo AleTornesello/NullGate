@@ -61,6 +61,16 @@ impl WebService {
         limit: usize,
         cancel: CancellationToken,
     ) -> Result<Self, ServiceFailure> {
+        Self::start_with_remote(config, auth, management, None, limit, cancel).await
+    }
+    pub async fn start_with_remote(
+        config: WebConfig,
+        auth: AuthService,
+        management: Arc<dyn PolicyManagement>,
+        remote: Option<Arc<dyn nullgate_core::RemoteManagement>>,
+        limit: usize,
+        cancel: CancellationToken,
+    ) -> Result<Self, ServiceFailure> {
         if limit == 0
             || limit > 65535
             || config.tls_terminated_by_proxy
@@ -148,7 +158,8 @@ impl WebService {
             WebSecurity::loopback_http(address, &origin)
         }
         .map_err(|_| failure(FailureStage::Configure, FailureCode::InvalidConfig, None))?;
-        let state = WebState::new(auth, security, management);
+        let mut state = WebState::new(auth, security, management);
+        state.remote = remote;
         let router = crate::router(state, management_routes()).layer(
             middleware::from_fn_with_state(Arc::new(Semaphore::new(limit.min(16))), admission),
         );

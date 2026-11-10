@@ -177,7 +177,7 @@ Recommended starting stack: Tokio, Hickory DNS protocol support, Hyper, rustls/t
 
 ### 11. Add manual remote blocklist refresh — P1
 
-- [ ] Fetch remote sources on explicit administrator action only.
+- [x] Fetch remote sources on explicit administrator action only. See [Task 11 contracts and validation](../../implementation-decisions.md#task-11-explicit-remote-refresh-contracts).
 
 **Depends on:** Tasks 1 and 10.
 **Files:** `crates/nullgate-orchestrator/src/imports.rs`; `crates/nullgate-web/src/imports.rs`; `crates/nullgate-orchestrator/tests/remote_imports.rs`.

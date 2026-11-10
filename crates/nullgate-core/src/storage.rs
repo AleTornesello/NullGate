@@ -284,6 +284,50 @@ fn edit(
     mutation: Mutation,
 ) -> Result<Option<ImportReport>, StorageError> {
     match mutation {
+        Mutation::RemoteSourceAttempt {
+            list_id,
+            url,
+            text,
+            at,
+        } => {
+            let kind = SourceKind::Remote { url };
+            valid_source(&kind)?;
+            check_time(at)?;
+            let list = snapshot
+                .lists
+                .iter_mut()
+                .find(|list| list.id == list_id)
+                .ok_or(StorageError::NotFound)?;
+            let index =
+                if let Some(index) = list.sources.iter().position(|source| source.kind == kind) {
+                    index
+                } else {
+                    list.sources.push(BlocklistSource {
+                        id: allocate(next_id)?,
+                        kind,
+                        entries: Vec::new(),
+                        last_attempt: None,
+                        last_success: None,
+                        last_report: None,
+                    });
+                    list.sources.len() - 1
+                };
+            let source = &mut list.sources[index];
+            if let Some(text) = text {
+                return import_into(source, &text, at, false).map(Some);
+            }
+            source.last_attempt = Some(at);
+            source.last_report = Some(ImportSummary {
+                outcome: ImportOutcome::FetchFailed,
+                accepted: 0,
+                duplicates: 0,
+                malformed: 0,
+                ignored: 0,
+                added: 0,
+                removed: 0,
+                diagnostics: Vec::new(),
+            });
+        }
         Mutation::ImportList {
             list_id,
             kind,

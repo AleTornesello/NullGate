@@ -83,7 +83,10 @@ fn enqueue(sender: &mpsc::Sender<Command>, command: Command) -> Result<(), Polic
 }
 fn check_request_size(mutation: &Mutation) -> Result<(), PolicyError> {
     let error = match mutation {
-        Mutation::Import { text, .. }
+        Mutation::RemoteSourceAttempt {
+            text: Some(text), ..
+        }
+        | Mutation::Import { text, .. }
         | Mutation::ReplaceEntries { text, .. }
         | Mutation::ImportList { text, .. }
             if text.len() > MAX_IMPORT_BYTES =>
@@ -97,7 +100,8 @@ fn check_request_size(mutation: &Mutation) -> Result<(), PolicyError> {
             kind: nullgate_core::SourceKind::File { filename },
             ..
         } if filename.len() > 128 => Some(StorageError::InvalidSource),
-        Mutation::AddSource {
+        Mutation::RemoteSourceAttempt { url, .. }
+        | Mutation::AddSource {
             kind: nullgate_core::SourceKind::Remote { url },
             ..
         } if url.len() > MAX_RULE_LINE_BYTES => Some(StorageError::InvalidSource),

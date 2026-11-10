@@ -23,6 +23,7 @@ pub struct WebState {
     pub auth: AuthService,
     pub security: WebSecurity,
     pub management: Arc<dyn PolicyManagement>,
+    pub remote: Option<Arc<dyn nullgate_core::RemoteManagement>>,
 }
 impl WebState {
     pub fn new(
@@ -34,7 +35,14 @@ impl WebState {
             auth,
             security,
             management,
+            remote: None,
         }
+    }
+}
+impl WebState {
+    pub fn with_remote(mut self, remote: Arc<dyn nullgate_core::RemoteManagement>) -> Self {
+        self.remote = Some(remote);
+        self
     }
 }
 impl IntoResponse for AuthError {
@@ -312,3 +320,5 @@ pub mod views;
 pub use routes::management_routes;
 pub mod server;
 pub use server::WebService;
+
+pub mod imports;

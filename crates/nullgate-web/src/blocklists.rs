@@ -304,7 +304,7 @@ pub async fn list(
         .iter()
         .find(|list| list.id == id)
         .ok_or_else(ApiError::not_found)?;
-    let sources=list.sources.iter().skip(page.offset).take(page.limit()).map(|source|serde_json::json!({"id":source.id,"kind":source.kind,"entries":source.entries.len(),"last_report":source.last_report})).collect::<Vec<_>>();
+    let sources=list.sources.iter().skip(page.offset).take(page.limit()).map(|source|serde_json::json!({"id":source.id,"kind":source.kind,"entries":source.entries.len(),"last_attempt":source.last_attempt,"last_success":source.last_success,"last_report":source.last_report})).collect::<Vec<_>>();
     Ok(Json(
         serde_json::json!({"revision":snapshot.revision(),"id":list.id,"name":list.name,"total_sources":list.sources.len(),"sources":sources}),
     ))
@@ -497,7 +497,9 @@ pub async fn delete_source(
     Path(id): Path<i64>,
     ApiJson(input): ApiJson<Revision>,
 ) -> Result<Json<Saved>, ApiError> {
-    editable(&state, id)?;
+    if state.remote.is_none() {
+        editable(&state, id)?;
+    }
     save(
         &state,
         input.expected_revision,

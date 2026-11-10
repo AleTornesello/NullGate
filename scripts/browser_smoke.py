@@ -17,7 +17,9 @@ import time
 from playwright.sync_api import sync_playwright, expect, Error as BrowserError
 
 class Origin(BaseHTTPRequestHandler):
+    requests = 0
     def do_GET(self):
+        Origin.requests += 1
         body = b"<h1>Local upstream fixture</h1>"
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -139,12 +141,32 @@ listen = "127.0.0.1:0"
                     expect(page.get_by_role("link", name=re.compile("rules.txt"))).to_be_visible()
                     page.screenshot(path=str(artifacts / "blocklists.png"), full_page=True)
                     row = page.locator("tbody tr").filter(has_text=target + "/ads")
+                    # Capture the expected revision before the application's successful-save reload.
+                    revision = int(row.locator('input[name="expected_revision"]').input_value()) + 1
                     with page.expect_response(lambda response: response.request.method == "POST" and response.url.endswith("/remove")) as removed:
                         row.get_by_role("button", name="Remove", exact=True).click()
                     assert removed.value.status == 200
-                    revision = removed.value.json()["revision"]
                     expect(page.locator("#feedback")).to_contain_text(f"Saved revision {revision}.")
                     assert filtered("/ads")[0] == 200
+                    # Production fetch policy must deny the local origin before any HTTP access.
+                    before = Origin.requests
+                    page.locator('input[name="url"]').fill(target + "/remote-list")
+                    with page.expect_response(lambda response: response.request.method == "POST" and response.url.endswith("/remote")) as attempted:
+                        page.get_by_role("button", name="Fetch remote rules", exact=True).click()
+                    assert attempted.value.status == 502
+                    result = attempted.value.json()
+                    assert result["code"] == "destination_denied" and result["revision"] > revision
+                    expect(page.locator("#feedback")).to_contain_text("Attempt recorded")
+                    assert Origin.requests == before
+                    page.reload()
+                    page.get_by_role("link", name="Remote: " + target).click()
+                    with page.expect_response(lambda response: response.request.method == "POST" and response.url.endswith("/refresh")) as refreshed:
+                        page.get_by_role("button", name="Refresh remote source", exact=True).click()
+                    assert refreshed.value.status == 502
+                    assert refreshed.value.json()["code"] == "destination_denied"
+                    expect(page.locator("#feedback")).to_contain_text("Attempt recorded")
+                    assert Origin.requests == before
+                    page.screenshot(path=str(artifacts / "remote-refresh.png"), full_page=True)
                     assert not errors, "Browser JavaScript error"
                     context.close()
                     browser.close()
@@ -154,7 +176,7 @@ listen = "127.0.0.1:0"
             log = log_path.read_text()
             assert password not in log and "nullgate_session=" not in log
             assert "runtime stopped" in log
-        print(json.dumps({"result": "passed", "checks": ["local Administrator login", "list creation", "mixed manual import diagnostics", "browser and HTTP proxy 200->403", "file import diagnostics", "rule removal 403->200", "clean shutdown"], "screenshot": str(artifacts / "blocklists.png")}))
+        print(json.dumps({"result": "passed", "checks": ["local Administrator login", "list creation", "mixed manual import diagnostics", "browser and HTTP proxy 200->403", "file import diagnostics", "rule removal 403->200", "remote import/refresh denies private destination before fetch", "clean shutdown"], "screenshot": str(artifacts / "blocklists.png")}))
     finally:
         if process is not None:
             process.terminate()

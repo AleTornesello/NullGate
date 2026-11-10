@@ -72,3 +72,11 @@ for (const form of document.querySelectorAll("form[action]")) {
     finally { submitting = false; buttons.forEach(button => { button.disabled = false; }); }
   });
 }
+
+for (const timestamp of document.querySelectorAll("time[data-unix]")) {
+  const date = new Date(Number(timestamp.dataset.unix) * 1000);
+  if (Number.isFinite(date.getTime())) {
+    timestamp.dateTime = date.toISOString();
+    timestamp.textContent = date.toLocaleString();
+  }
+}

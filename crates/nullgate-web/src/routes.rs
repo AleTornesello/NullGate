@@ -7,6 +7,11 @@ use axum::{
 };
 pub fn management_routes() -> Router<WebState> {
     let small = Router::new()
+        .route("/api/v1/lists/{id}/remote", post(crate::imports::import))
+        .route(
+            "/api/v1/sources/{id}/refresh",
+            post(crate::imports::refresh),
+        )
         .route("/api/v1/lists", get(api::lists).post(api::create))
         .route(
             "/api/v1/lists/{id}",

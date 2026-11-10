@@ -16,7 +16,11 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 libc.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
+rcgen.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

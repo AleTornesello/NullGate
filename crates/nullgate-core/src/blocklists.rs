@@ -95,6 +95,13 @@ impl RepositorySnapshot {
 /// One atomic logical edit. `at` is an administrator-service supplied Unix timestamp in seconds.
 #[derive(Clone, Debug)]
 pub enum Mutation {
+    /// Atomically create/reuse remote provenance and record the completed fetch attempt.
+    RemoteSourceAttempt {
+        list_id: i64,
+        url: String,
+        text: Option<String>,
+        at: i64,
+    },
     /// Atomically create/reuse manual/file provenance and import a valid subset.
     ImportList {
         list_id: i64,

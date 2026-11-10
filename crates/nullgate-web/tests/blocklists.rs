@@ -406,6 +406,21 @@ async fn html_escapes_names_and_rules_and_all_api_writes_are_authorized() {
     assert_eq!(status, StatusCode::OK);
     let session = cookies.iter().find(|c| c.contains("session=")).unwrap();
     let (_, csrf) = f.csrf(session).await;
+    for path in ["/api/v1/lists/1/remote", "/api/v1/sources/1/refresh"] {
+        assert_eq!(
+            f.json(
+                "POST",
+                path,
+                serde_json::json!({"expected_revision":0,"url":"http://127.0.0.1/internal"}),
+                session,
+                &csrf
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+
     assert_eq!(
         f.json("GET", "/api/v1/lists", serde_json::json!({}), session, "")
             .await
@@ -674,4 +689,125 @@ async fn capacity_and_activation_failure_are_distinct_api_outcomes() {
             .lists
             .is_empty()
     );
+}
+
+struct RemoteStub {
+    manager: Arc<Management>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+impl nullgate_core::RemoteManagement for RemoteStub {
+    fn import_url(
+        &self,
+        revision: u64,
+        list_id: i64,
+        url: String,
+    ) -> PolicyFuture<'_, Result<nullgate_core::RemoteResult, nullgate_core::RemoteError>> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            let saved = self
+                .manager
+                .save(
+                    revision,
+                    Mutation::RemoteSourceAttempt {
+                        list_id,
+                        url,
+                        text: Some("remote.invalid\nbad rule".into()),
+                        at: 1,
+                    },
+                )
+                .await?;
+            Ok(nullgate_core::RemoteResult {
+                saved,
+                outcome: nullgate_core::RemoteOutcome::Applied,
+            })
+        })
+    }
+    fn refresh(
+        &self,
+        revision: u64,
+        source_id: i64,
+    ) -> PolicyFuture<'_, Result<nullgate_core::RemoteResult, nullgate_core::RemoteError>> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            let saved = self
+                .manager
+                .save(revision, Mutation::RecordFetchFailure { source_id, at: 2 })
+                .await?;
+            Ok(nullgate_core::RemoteResult {
+                saved,
+                outcome: nullgate_core::RemoteOutcome::FetchFailed(
+                    nullgate_core::FetchFailure::Network,
+                ),
+            })
+        })
+    }
+}
+#[tokio::test]
+async fn remote_routes_require_csrf_and_report_recorded_failure_revision() {
+    let mut f = Fixture::new(AuthMode::None).await;
+    let stub = Arc::new(RemoteStub {
+        manager: f.manager.clone(),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let state = WebState::new(
+        f.auth.clone(),
+        WebSecurity::loopback_http("127.0.0.1:8081".parse().unwrap(), "http://127.0.0.1:8081")
+            .unwrap(),
+        f.manager.clone(),
+    )
+    .with_remote(stub.clone());
+    f.app = router(state, management_routes());
+    f.manager
+        .save(
+            0,
+            Mutation::CreateList {
+                name: "Remote".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let id = f.manager.reader.current().unwrap().repository().lists[0].id;
+    let path = format!("/api/v1/lists/{id}/remote");
+    let body = serde_json::json!({"expected_revision":1,"url":"https://rules.invalid/list?token=%3Cscript%3E"});
+    assert_eq!(
+        f.json("POST", &path, body.clone(), "", "").await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(stub.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let (cookie, proof) = f.csrf("").await;
+    let (status, saved) = f.json("POST", &path, body, &cookie, &proof).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["revision"], 2);
+    assert_eq!(saved["import"]["malformed"][0]["line"], 2);
+    let source = f.manager.reader.current().unwrap().repository().lists[0].sources[0].id;
+    let (status, error) = f
+        .json(
+            "POST",
+            &format!("/api/v1/sources/{source}/refresh"),
+            serde_json::json!({"expected_revision":2}),
+            &cookie,
+            &proof,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(error["revision"], 3);
+    assert_eq!(error["code"], "download_failed");
+    assert_eq!(
+        f.manager
+            .reader
+            .current()
+            .unwrap()
+            .repository()
+            .source(source)
+            .unwrap()
+            .entries
+            .len(),
+        1
+    );
+    let (status, _, html) = f
+        .request("GET", "/", Body::empty(), "text/html", &cookie, "")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("Refresh remote source"));
+    assert!(!html.contains("<script>"));
 }
