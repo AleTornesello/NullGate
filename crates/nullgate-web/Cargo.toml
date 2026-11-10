@@ -9,3 +9,15 @@ workspace = true
 
 [dependencies]
 nullgate-core.workspace = true
+tokio.workspace = true
+axum.workspace = true
+argon2.workspace = true
+sha2.workspace = true
+getrandom.workspace = true
+subtle.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+tower = { version = "=0.5.3", features = ["util"] }
+http-body-util.workspace = true
+rusqlite.workspace = true

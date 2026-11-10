@@ -33,3 +33,6 @@ pub mod application;
 pub use application::Application;
 pub use nullgate_core::ServiceTransport;
 pub use nullgate_core::{AppConfig, ConfigError};
+
+pub mod provision;
+pub use provision::provision_local_administrator;

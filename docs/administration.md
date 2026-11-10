@@ -68,3 +68,22 @@ The repository requires the caller’s expected revision for every edit. Validat
 The orchestrator now implements the core management interface as a bounded, serialized queue. Successful saves return the published snapshot and full parser diagnostics; malformed lines do not prevent valid entries from becoming active. Queue-full and already-stopped requests are rejected before acceptance. Cancelling a request after acceptance does not cancel its durable update/publication; reconcile its revision before retrying.
 
 Pre-commit storage failure retains the active policy. Post-commit activation error, panic or deadline expiry reports the committed revision as inactive, blocks new policy admissions and refuses further edits until explicit recovery succeeds. These are implemented library outcomes; HTTP routes and connection invalidation consumers remain later tasks.
+
+
+## Local authentication library (Task 9)
+
+Local username/password authentication is the configuration default. Provision the first Administrator explicitly before web integration; there is no shared default password or remote bootstrap endpoint. Create a regular password file with owner-only permissions (0600) in a trusted directory, containing your unique password and an optional final newline, then run:
+
+```sh
+cargo run --locked --bin nullgate -- provision-admin --config config/nullgate.example.toml --username your-admin-name --password-file /secure/path/nullgate-password
+```
+
+The command reads and hashes the password without placing it in process arguments or logs. Symlinks, non-regular files, group/other permissions and oversized input are rejected. First-run provisioning is transactional and refuses to overwrite any existing account. Subsequent accounts are created through the Administrator-authorized library API using a live session token; cached role/identity objects are not authority. Account-management UI and web listener startup remain Task 10.
+
+Usernames are case-insensitive ASCII, 1–64 letters/digits/dot/underscore/hyphen. Passwords contain 12–1024 UTF-8 bytes, without trimming. Argon2id uses a distinct random salt per password. Sessions are opaque, stored only as SHA256 digests, rotate on login, expire after eight hours and are revoked on logout. There is no sliding idle expiry. Roles and disabled-account state are checked for every request; account creation rechecks Administrator session authority in its write transaction. Authentication changes do not advance the filtering-policy revision.
+
+`nullgate-web::WebState` injects authentication, explicit transport/origin policy and the core management interface. `router(state, management_routes)` protects all supplied routes and fallback handlers, with authenticated `Identity` in request extensions. Viewers may read but cannot mutate through direct requests. Explicit no-authentication mode grants Administrator permissions while retaining trusted Host/Origin and CSRF checks. OIDC remains unavailable until Task 14; proxy-client authentication is separate.
+
+The library provides `/api/v1/auth/csrf`, `/login`, `/logout` and `/me` beneath the same `/api/v1/auth` prefix. Obtain the JSON CSRF proof first; send its cookie and `X-CSRF-Token` plus the configured Origin for login and browser mutations. Login returns a new proof and host-only HttpOnly session cookie; logout clears and revokes it. Authentication responses are `Cache-Control: no-store`. There is no permissive CORS policy.
+
+Cleartext cookies are allowed only for loopback HTTP. Dedicated deployments must serve the router through HTTPS; cookies then use Secure and a `__Host-` prefix, with HttpOnly, SameSite=Lax, Path=/ and no Domain attribute. An explicit loopback TLS reverse-proxy context accepts a configured HTTPS public origin, never inferred forwarding headers. Task 10 must supply this trusted context and bind the corresponding transport; the authentication library itself does not start a listener.

@@ -79,7 +79,7 @@ impl From<rusqlite::Error> for StorageError {
 /// This API is synchronous and is not a live policy publisher.
 #[derive(Debug)]
 pub struct SqliteRepository {
-    connection: Connection,
+    pub(crate) connection: Connection,
 }
 impl SqliteRepository {
     /// Create schema 1 if absent; refuse unknown schemas and invalid persisted rules.

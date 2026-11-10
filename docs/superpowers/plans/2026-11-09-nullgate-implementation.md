@@ -153,7 +153,7 @@ Recommended starting stack: Tokio, Hickory DNS protocol support, Hyper, rustls/t
 
 ### 9. Implement local authentication and roles — P1
 
-- [ ] Protect web administration before adding management endpoints.
+- [x] Protect web administration before adding management endpoints. See [Task 9 authentication contracts and validation](../../implementation-decisions.md#task-9-local-authentication-contracts).
 
 **Depends on:** Tasks 1 and 3.
 **Files:** `crates/nullgate-web/src/{lib,auth,authorization,session}.rs`; `crates/nullgate-web/tests/access_control.rs`; user storage modules in core.

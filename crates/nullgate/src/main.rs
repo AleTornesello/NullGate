@@ -7,6 +7,11 @@ use tokio_util::sync::CancellationToken;
 
 enum Action {
     Run(PathBuf),
+    Provision {
+        config: PathBuf,
+        username: String,
+        password_file: PathBuf,
+    },
     Help,
     Version,
 }
@@ -27,6 +32,26 @@ fn arguments() -> Result<Action, ()> {
                 Err(())
             }
         }
+        Some(value) if value == "provision-admin" => {
+            let (mut config, mut username, mut password_file) = (None, None, None);
+            while let Some(flag) = args.next() {
+                let value = args.next().ok_or(())?;
+                if flag == "--config" && config.is_none() {
+                    config = Some(PathBuf::from(value));
+                } else if flag == "--username" && username.is_none() {
+                    username = Some(value.into_string().map_err(|_| ())?);
+                } else if flag == "--password-file" && password_file.is_none() {
+                    password_file = Some(PathBuf::from(value));
+                } else {
+                    return Err(());
+                }
+            }
+            Ok(Action::Provision {
+                config: config.ok_or(())?,
+                username: username.ok_or(())?,
+                password_file: password_file.ok_or(())?,
+            })
+        }
         Some(value) if value == "--config" => {
             let path = args.next().ok_or(())?;
             if args.next().is_some() {
@@ -39,10 +64,17 @@ fn arguments() -> Result<Action, ()> {
 }
 #[tokio::main]
 async fn main() -> ExitCode {
-    let path = match arguments() {
-        Ok(Action::Run(path)) => path,
+    let (path, provision) = match arguments() {
+        Ok(Action::Run(path)) => (path, None),
+        Ok(Action::Provision {
+            config,
+            username,
+            password_file,
+        }) => (config, Some((username, password_file))),
         Ok(Action::Help) => {
-            println!("Usage: nullgate --config <path>\n       nullgate --help | --version");
+            println!(
+                "Usage: nullgate --config <path>\n       nullgate --help | --version\n       nullgate provision-admin --config <path> --username <name> --password-file <path>"
+            );
             return ExitCode::SUCCESS;
         }
         Ok(Action::Version) => {
@@ -69,6 +101,24 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if let Some((username, password_file)) = provision {
+        return match nullgate_orchestrator::provision_local_administrator(
+            config,
+            username,
+            password_file,
+        )
+        .await
+        {
+            Ok(()) => {
+                tracing::info!("administrator provisioned");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                tracing::error!(error=%error,"administrator provisioning failed");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let cancel = CancellationToken::new();
     let signals = match signal_task(cancel.clone()) {
         Ok(signals) => signals,

@@ -305,3 +305,86 @@ fn initial_bind_failure_exits_unsuccessfully_without_readiness() {
     assert!(!log.contains("runtime ready"));
     assert!(!log.contains("NEVER-LOG-PRIVATE-KEY"));
 }
+
+#[test]
+fn explicit_first_administrator_provisioning_has_no_default_or_password_argument() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = Scratch::new();
+    let config = scratch.config(
+        "127.0.0.1:5353".parse().unwrap(),
+        "127.0.0.1:8080".parse().unwrap(),
+        "127.0.0.1:8081".parse().unwrap(),
+    );
+    let password = scratch.0.join("password.txt");
+    std::fs::write(&password, "NEVER-LOG-AUTH-PASSWORD\n").unwrap();
+    std::fs::set_permissions(&password, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_nullgate"))
+            .arg("provision-admin")
+            .arg("--config")
+            .arg(&config)
+            .args(["--username", "admin", "--password-file"])
+            .arg(&password)
+            .output()
+            .unwrap()
+    };
+    let output = run();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("NEVER-LOG-AUTH-PASSWORD"));
+    let repo =
+        nullgate_core::AuthRepository::open(scratch.0.join("data/nullgate.sqlite3")).unwrap();
+    let user = repo.user("admin").unwrap().unwrap();
+    assert_eq!(user.role, nullgate_core::Role::Administrator);
+    assert!(user.password_hash.starts_with("$argon2id$"));
+    assert!(!user.password_hash.contains("NEVER-LOG-AUTH-PASSWORD"));
+    assert!(!run().status.success());
+}
+
+#[test]
+fn provisioning_rejects_a_fifo_without_waiting_for_a_writer() {
+    let scratch = Scratch::new();
+    let config = scratch.config(
+        "127.0.0.1:5353".parse().unwrap(),
+        "127.0.0.1:8080".parse().unwrap(),
+        "127.0.0.1:8081".parse().unwrap(),
+    );
+    let fifo = scratch.0.join("password.fifo");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut child = ChildGuard(
+        Command::new(env!("CARGO_BIN_EXE_nullgate"))
+            .arg("provision-admin")
+            .arg("--config")
+            .arg(config)
+            .args(["--username", "admin", "--password-file"])
+            .arg(fifo)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = std::time::Instant::now() + Duration::from_millis(500);
+    let outcome = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(
+        outcome.is_some(),
+        "non-regular password file blocked provisioning"
+    );
+    assert!(!outcome.unwrap().success());
+}
