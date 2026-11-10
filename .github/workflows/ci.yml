@@ -26,5 +26,5 @@ jobs:
         run: cargo doc --workspace --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
-      - name: Smoke test scaffold executable
-        run: cargo run --locked --bin nullgate
+      - name: Check executable metadata
+        run: cargo run --locked --bin nullgate -- --version

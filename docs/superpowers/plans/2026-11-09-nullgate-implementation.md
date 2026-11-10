@@ -141,7 +141,7 @@ Recommended starting stack: Tokio, Hickory DNS protocol support, Hyper, rustls/t
 
 ### 8. Wire service lifecycle and executable — P1
 
-- [ ] Start, supervise, stop, and restart proxies through the orchestrator.
+- [x] Start, supervise, stop, and restart proxies through the orchestrator. See [Task 8 runtime contracts and validation](../../implementation-decisions.md#task-8-runtime-contracts).
 
 **Depends on:** Tasks 3–7.
 **Files:** `crates/nullgate-orchestrator/src/{lib,supervisor}.rs`; `crates/nullgate/src/main.rs`; `crates/nullgate-orchestrator/tests/lifecycle.rs`.

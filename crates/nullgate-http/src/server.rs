@@ -62,6 +62,23 @@ impl HttpService {
         options: HttpOptions,
         cancel: CancellationToken,
     ) -> Result<Self, ServiceFailure> {
+        Self::start_with_tunnel_control(
+            config,
+            policy,
+            options,
+            cancel,
+            crate::TunnelControl::default(),
+        )
+        .await
+    }
+    /// Share the same invalidation participant across supervised service generations.
+    pub async fn start_with_tunnel_control(
+        config: HttpConfig,
+        policy: PolicySubscription,
+        options: HttpOptions,
+        cancel: CancellationToken,
+        tunnels: crate::TunnelControl,
+    ) -> Result<Self, ServiceFailure> {
         if options.max_connections == 0
             || options.max_connections > 65535
             || options.max_requests == 0
@@ -112,7 +129,6 @@ impl HttpService {
         let cancel = cancel.child_token();
         let token = cancel.clone();
         let tracker = TaskTracker::new();
-        let tunnels = crate::TunnelControl::default();
         let state = Arc::new(State {
             tunnels: tunnels.clone(),
             shutdown: token.clone(),

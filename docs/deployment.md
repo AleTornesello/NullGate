@@ -8,7 +8,9 @@ All devices use the same blocking rules.
 
 ## Setup outline
 
-The following is the intended setup flow, not an executable installation guide. Binaries, exact CLI flags, runtime defaults and service packaging are not implemented. Core now loads the schema-1 configuration shown in the example below; the executable is not wired to it yet. Task 1 selects versioned TOML startup configuration and SQLite persistent state; see [implementation decisions](implementation-decisions.md).
+The current runtime can be started with `cargo run --locked --bin nullgate -- --config config/nullgate.example.toml`. Copy/edit the example for the intended listen addresses, upstream DNS and data directory. Relative paths resolve against that file. Wait for `runtime ready`, which lists the actual bound DNS UDP/TCP and HTTP addresses; `runtime health` reports withdrawal/restarts. SIGINT/SIGTERM cancel and join proxy work and close active tunnels. Initial startup failures exit unsuccessfully; later proxy failures retry at 1–30 seconds, resetting after 60 healthy seconds.
+
+Web administration, authentication integration, CA issuance and HTTPS URL inspection are not available yet. Web configuration remains validated but its listener/key files are unused. New databases start with no rules; importing/editing currently uses library APIs. The rest of this setup outline describes the intended completed product, not current administration/inspection capabilities. Packaging remains Task 17. See [implementation decisions](implementation-decisions.md).
 
 1. Install and start NullGate on the selected machine.
 2. Configure the DNS and HTTP proxy listen addresses and ports.
@@ -22,6 +24,8 @@ The following is the intended setup flow, not an executable installation guide. 
 For a local installation, client settings point to the local NullGate instance. For a dedicated server, client settings point to its reachable network address. Exact configuration steps depend on the browser and operating system and remain to be documented.
 
 ## HTTPS behavior
+
+Current runtime: HTTPS is opaque CONNECT passthrough. Domain rules can reject CONNECT, but HTTPS URL rules do not block their hosts or encrypted paths. Successful CONNECT responses report `NullGate-HTTPS-URL-Filtering: unavailable`; clients continue verifying the upstream certificate end-to-end. The following inspection behavior belongs to Task 13.
 
 NullGate inspects HTTPS only for exact hosts derived from active HTTPS URL rules. HTTP-only URL rules do not select inspection. Other HTTPS traffic passes through without decryption. Trusting the generated CA allows NullGate to inspect traffic for selected domains; distribute only the public certificate to clients.
 

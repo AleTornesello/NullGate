@@ -861,3 +861,61 @@ async fn recovery_read_errors_stay_unavailable_and_read_panics_stop_before_reply
     );
     assert!(coordinator.shutdown().await.is_err());
 }
+
+#[tokio::test]
+async fn shutdown_drains_an_active_write_and_an_already_queued_write_in_order() {
+    let scratch = Scratch::new();
+    let (repo, source) = scratch.seed();
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let coordinator = PolicyCoordinator::start(
+        GateRepo {
+            inner: repo,
+            entered: Some(entered_tx),
+            release: release_rx,
+        },
+        PolicyOptions {
+            queue_capacity: 2,
+            ..PolicyOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let writer = coordinator.handle();
+    let first_client = writer.clone();
+    let first =
+        tokio::spawn(async move { first_client.save(2, import(source, "first.example")).await });
+    bounded(entered_rx).await.unwrap();
+    let mut queued = Box::pin(writer.save(3, import(source, "queued.example")));
+    assert!(
+        std::future::poll_fn(|cx| std::task::Poll::Ready(queued.as_mut().poll(cx).is_pending()))
+            .await
+    );
+    let mut shutdown = Box::pin(coordinator.shutdown());
+    assert!(
+        std::future::poll_fn(|cx| std::task::Poll::Ready(shutdown.as_mut().poll(cx).is_pending()))
+            .await
+    );
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        bounded(first).await.unwrap().unwrap().snapshot.revision(),
+        3
+    );
+    assert_eq!(bounded(queued).await.unwrap().snapshot.revision(), 4);
+    bounded(shutdown).await.unwrap();
+    let persisted = SqliteRepository::open(scratch.db())
+        .unwrap()
+        .snapshot()
+        .unwrap();
+    let snapshot = PolicySnapshot::from_repository(persisted).unwrap();
+    assert_eq!(snapshot.revision(), 4);
+    assert!(domain(&snapshot, "first.example"));
+    assert!(domain(&snapshot, "queued.example"));
+    assert_eq!(
+        writer
+            .save(4, import(source, "late.example"))
+            .await
+            .unwrap_err(),
+        PolicyError::Stopped
+    );
+}

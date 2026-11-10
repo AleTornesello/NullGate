@@ -1,7 +1,7 @@
 //! Cancellable UDP/TCP DNS filtering over immutable policy subscriptions.
 //!
 //! Bind both configured listeners before reporting readiness. Each query captures current
-//! policy; only domain rules affect DNS. The binary is not wired to this service yet.
+//! policy; only domain rules affect DNS. The orchestrator supervises this service for the executable.
 //!
 //! ```no_run
 //! use nullgate_core::{DnsConfig, PolicySubscription, ServiceFailure};

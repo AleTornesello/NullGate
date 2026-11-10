@@ -1,7 +1,7 @@
 //! Proxy lifecycle and rule coordination for NullGate.
 //!
 //! The policy coordinator implements bounded durable saves and atomic publication.
-//! Proxy services and executable startup are not wired yet.
+//! Application startup composes policy ownership and supervised DNS/HTTP services.
 
 //!
 //! ```no_run
@@ -22,3 +22,14 @@
 
 pub mod policy;
 pub use policy::{PolicyCoordinator, PolicyHandle, PolicyOptions};
+
+pub mod supervisor;
+pub use supervisor::{
+    ManagedProxy, ProxyFactory, ProxyHealth, ProxyPhase, RuntimeError, RuntimeMonitor,
+    RuntimePhase, RuntimeStatus, Supervisor,
+};
+
+pub mod application;
+pub use application::Application;
+pub use nullgate_core::ServiceTransport;
+pub use nullgate_core::{AppConfig, ConfigError};
