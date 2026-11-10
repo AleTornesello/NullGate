@@ -43,9 +43,8 @@ upstreams = ["{upstream}"]
 listen = "{http}"
 [web]
 listen = "{web}"
-[web.tls]
-certificate_file = "UNREAD-CERT.pem"
-private_key_file = "NEVER-LOG-PRIVATE-KEY.pem"
+# Authentication and web serving are now active; TLS requires explicit files.
+# NEVER-LOG-PRIVATE-KEY
 "#
             ),
         )
@@ -141,12 +140,12 @@ async fn real_binary_filters_both_proxies_and_sigterm_cleans_up_tunnels() {
             .await
             .unwrap();
     });
-    // Web is deliberately occupied and its key files do not exist: Task8 must not use them.
-    let web = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    // A separate reserved socket remains untouched; web binds its own ephemeral listener.
+    let _web = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let path = scratch.config(
         upstream_address,
         "127.0.0.1:0".parse().unwrap(),
-        web.local_addr().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
     );
     let log = scratch.0.join("runtime.log");
     let output = std::fs::File::create(&log).unwrap();

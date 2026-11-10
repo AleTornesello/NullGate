@@ -1,6 +1,6 @@
 # Architecture
 
-NullGate consists of four components, all written in Rust. The initial scaffold uses separate library crates and one executable. Task 1 selects runtime and interface contracts in [implementation decisions](implementation-decisions.md); the shared rule engine, TOML configuration, SQLite repository, live-policy coordinator and cancellable DNS/HTTP library services with opaque CONNECT passthrough are implemented; the executable now delegates startup, supervision and shutdown to orchestration; local web authentication/role middleware and offline provisioning are available; web listener/UI integration and TLS inspection remain unimplemented.
+NullGate consists of four components, all written in Rust. The initial scaffold uses separate library crates and one executable. Task 1 selects runtime and interface contracts in [implementation decisions](implementation-decisions.md); the shared rule engine, TOML configuration, SQLite repository, live-policy coordinator and cancellable DNS/HTTP library services with opaque CONNECT passthrough are implemented; the executable now delegates startup, supervision and shutdown to orchestration; local web authentication/role middleware and offline provisioning are available; the web listener and blocklist interface are integrated; TLS inspection remains unimplemented.
 
 ## DNS proxy
 
@@ -14,7 +14,7 @@ Initial DNS uses UDP and TCP, retries truncated UDP replies over TCP, and tries 
 
 Clients select the HTTP proxy through browser or operating system proxy settings. The proxy enforces domain and URL rules and returns an empty HTTP 403 response when a request is blocked. It does not display a block page.
 
-The library currently supports unencrypted HTTP filtering and opaque CONNECT tunnels. It reports HTTPS URL filtering as unavailable through `HttpService::capabilities()` and a successful CONNECT response header; URL-only hosts stay permitted. Existing tunnels close on domain blocks or inspection-selection changes. The HTTP tunnel control implements core policy activation for acknowledgement after selective cleanup; Task 8 injects the same control into the coordinator and every supervised HTTP generation. The executable starts DNS/HTTP and reports aggregate readiness and health.
+The library currently supports unencrypted HTTP filtering and opaque CONNECT tunnels. It reports HTTPS URL filtering as unavailable through `HttpService::capabilities()` and a successful CONNECT response header; URL-only hosts stay permitted. Existing tunnels close on domain blocks or inspection-selection changes. The HTTP tunnel control implements core policy activation for acknowledgement after selective cleanup; Task 8 injects the same control into the coordinator and every supervised HTTP generation. The executable starts DNS/HTTP/web and reports aggregate readiness and health.
 
 For unencrypted HTTP, the proxy can evaluate URL paths directly. For HTTPS, URL paths are encrypted, so matching them requires TLS inspection:
 

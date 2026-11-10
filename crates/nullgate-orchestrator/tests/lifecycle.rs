@@ -1,7 +1,7 @@
 use nullgate_core::{
-    BoundListener, FailureCode, FailureStage, PolicyFuture, PolicySnapshot, PolicySubscription,
-    RepositorySnapshot, ServiceFailure, ServiceKind, ServiceMonitor, ServiceReadiness,
-    ServiceStatus, ServiceTransport, policy_channel, service_status_channel,
+    BoundListener, FailureCode, FailureStage, PolicyFuture, PolicyManagement, PolicySnapshot,
+    PolicySubscription, RepositorySnapshot, ServiceFailure, ServiceKind, ServiceMonitor,
+    ServiceReadiness, ServiceStatus, ServiceTransport, policy_channel, service_status_channel,
 };
 use nullgate_orchestrator::{ManagedProxy, ProxyFactory, ProxyPhase, Supervisor};
 use std::{
@@ -303,6 +303,8 @@ fn config(scratch: &Scratch, upstream: SocketAddr) -> nullgate_core::AppConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
         },
         web: WebConfig {
+            public_origin: None,
+            tls_terminated_by_proxy: false,
             listen: "127.0.0.1:0".parse().unwrap(),
             tls: None,
         },
@@ -508,4 +510,134 @@ async fn transient_policy_unavailability_withdraws_readiness_without_restarting_
     spin(|| monitor.current().is_ready()).await;
     assert_eq!(factory.control.lock().unwrap().attempts, [1, 1]);
     supervisor.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn web_api_changes_persist_and_immediately_filter_running_proxy() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpStream, UdpSocket};
+    let scratch = Scratch::new();
+    let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let mut cfg = config(&scratch, upstream.local_addr().unwrap());
+    cfg.auth = nullgate_core::AuthMode::None;
+    let app = nullgate_orchestrator::Application::start(cfg.clone(), CancellationToken::new())
+        .await
+        .unwrap();
+    let status = app.monitor().current();
+    let ProxyPhase::Ready(web) = status.web.unwrap().phase else {
+        panic!()
+    };
+    let web = web.listeners[0].address;
+    let ProxyPhase::Ready(http) = status.http.phase else {
+        panic!()
+    };
+    let http = http.listeners[0].address;
+    async fn request(
+        address: SocketAddr,
+        method: &str,
+        path: &str,
+        body: &str,
+        cookie: &str,
+        csrf: &str,
+    ) -> String {
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: {address}\r\nOrigin: http://{address}\r\nContent-Type: application/json\r\nCookie: {cookie}\r\nX-CSRF-Token: {csrf}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        bounded(stream.read_to_end(&mut response)).await.unwrap();
+        String::from_utf8(response).unwrap()
+    }
+    let bootstrap = request(web, "GET", "/api/v1/auth/csrf", "", "", "").await;
+    let cookie = bootstrap
+        .lines()
+        .find(|line| line.to_ascii_lowercase().starts_with("set-cookie:"))
+        .unwrap()
+        .split_once(':')
+        .unwrap()
+        .1
+        .trim()
+        .split(';')
+        .next()
+        .unwrap();
+    let proof = bootstrap
+        .split("\r\n\r\n")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .nth(3)
+        .unwrap();
+    let created = request(
+        web,
+        "POST",
+        "/api/v1/lists",
+        r#"{"expected_revision":0,"name":"Live"}"#,
+        cookie,
+        proof,
+    )
+    .await;
+    assert!(created.starts_with("HTTP/1.1 200"), "{created}");
+    let id = app
+        .policy()
+        .subscribe()
+        .current()
+        .unwrap()
+        .repository()
+        .lists[0]
+        .id;
+    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_address = origin.local_addr().unwrap();
+    let origin_job = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = origin.accept().await.unwrap();
+            read_head(&mut stream).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+        }
+    });
+    async fn filtered(proxy: SocketAddr, target: SocketAddr, path: &str) -> String {
+        let mut stream = TcpStream::connect(proxy).await.unwrap();
+        stream.write_all(format!("GET http://{target}{path} HTTP/1.1\r\nHost: {target}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+        let mut response = String::new();
+        bounded(stream.read_to_string(&mut response)).await.unwrap();
+        response
+    }
+    assert!(
+        filtered(http, origin_address, "/ads")
+            .await
+            .starts_with("HTTP/1.1 200")
+    );
+    let rules = format!(
+        r#"{{"expected_revision":1,"text":"http://{origin_address}/ads\nblocked.invalid\nbad rule"}}"#
+    );
+    let saved = request(
+        web,
+        "POST",
+        &format!("/api/v1/lists/{id}/rules"),
+        &rules,
+        cookie,
+        proof,
+    )
+    .await;
+    assert!(saved.starts_with("HTTP/1.1 200"), "{saved}");
+    assert!(
+        filtered(http, origin_address, "/ads?ignored=1")
+            .await
+            .starts_with("HTTP/1.1 403")
+    );
+    assert!(
+        filtered(http, origin_address, "/sibling")
+            .await
+            .starts_with("HTTP/1.1 200")
+    );
+    app.shutdown().await.unwrap();
+    origin_job.abort();
+    let mut repo = nullgate_core::SqliteRepository::open(cfg.database_path()).unwrap();
+    assert_eq!(
+        nullgate_core::BlocklistRepository::snapshot(&mut repo)
+            .unwrap()
+            .revision,
+        2
+    );
+    assert!(TcpListener::bind(web).await.is_ok());
 }

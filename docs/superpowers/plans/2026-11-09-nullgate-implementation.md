@@ -165,7 +165,7 @@ Recommended starting stack: Tokio, Hickory DNS protocol support, Hyper, rustls/t
 
 ### 10. Build blocklist API and Rust web interface — P1
 
-- [ ] Deliver list management with manual entry and file imports.
+- [x] Deliver list management with manual entry and file imports. See [Task 10 contracts and validation](../../implementation-decisions.md#task-10-blocklist-management-contracts).
 
 **Depends on:** Tasks 4, 8, and 9.
 **Files:** `crates/nullgate-web/src/{routes,blocklists,views}.rs`; `crates/nullgate-web/tests/blocklists.rs`; orchestrator web-service wiring.

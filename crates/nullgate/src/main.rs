@@ -128,10 +128,12 @@ async fn main() -> ExitCode {
         }
     };
     tracing::info!(
-        web_available = false,
+        web_available = true,
         https_url_filtering = false,
         "starting proxy runtime"
     );
+    let public_origin = config.web.public_origin.clone();
+    let web_secure = config.web.tls.is_some() || config.web.tls_terminated_by_proxy;
     let app = match Application::start(config, cancel.clone()).await {
         Ok(app) => app,
         Err(RuntimeError::Cancelled) => {
@@ -146,14 +148,14 @@ async fn main() -> ExitCode {
         }
     };
     let mut monitor = app.monitor();
-    report(&monitor.current());
+    report(&monitor.current(), public_origin.as_deref(), web_secure);
     let wait = app.wait();
     tokio::pin!(wait);
     let result = loop {
         tokio::select! {
             biased;
             result=&mut wait=>break result,
-            status=monitor.changed()=>{report(&status);if matches!(status.phase,RuntimePhase::Stopped|RuntimePhase::Failed){break wait.await;}}
+            status=monitor.changed()=>{report(&status,public_origin.as_deref(),web_secure);if matches!(status.phase,RuntimePhase::Stopped|RuntimePhase::Failed){break wait.await;}}
         }
     };
     signals.abort();
@@ -168,7 +170,7 @@ async fn main() -> ExitCode {
         }
     }
 }
-fn report(status: &RuntimeStatus) {
+fn report(status: &RuntimeStatus, public_origin: Option<&str>, web_secure: bool) {
     if status.is_ready()
         && let (ProxyPhase::Ready(dns), ProxyPhase::Ready(http)) =
             (&status.dns.phase, &status.http.phase)
@@ -182,11 +184,23 @@ fn report(status: &RuntimeStatus) {
             .iter()
             .find(|listener| listener.transport == nullgate_orchestrator::ServiceTransport::Tcp);
         if let (Some(udp), Some(tcp), Some(http)) = (udp, tcp, http.listeners.first()) {
-            tracing::info!(dns_udp=%udp.address,dns_tcp=%tcp.address,http=%http.address,policy_revision=status.policy_revision,https_url_filtering=false,"runtime ready");
+            if let Some(crate_web) = &status.web
+                && let ProxyPhase::Ready(web) = &crate_web.phase
+                && let Some(web) = web.listeners.first()
+            {
+                let origin = public_origin.map(str::to_owned).unwrap_or_else(|| {
+                    format!(
+                        "{}://{}",
+                        if web_secure { "https" } else { "http" },
+                        web.address
+                    )
+                });
+                tracing::info!(dns_udp=%udp.address,dns_tcp=%tcp.address,http=%http.address,web=%web.address,web_origin=%origin,policy_revision=status.policy_revision,https_url_filtering=false,"runtime ready");
+            }
             return;
         }
     }
-    tracing::info!(ready=false,phase=?status.phase,dns=?status.dns,http=?status.http,policy_unavailable=?status.policy_unavailable,"runtime health");
+    tracing::info!(ready=false,phase=?status.phase,dns=?status.dns,http=?status.http,web=?status.web,policy_unavailable=?status.policy_unavailable,"runtime health");
 }
 #[cfg(unix)]
 fn signal_task(cancel: CancellationToken) -> std::io::Result<tokio::task::JoinHandle<()>> {

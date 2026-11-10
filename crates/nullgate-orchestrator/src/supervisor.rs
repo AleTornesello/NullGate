@@ -43,6 +43,7 @@ pub struct RuntimeStatus {
     pub phase: RuntimePhase,
     pub dns: ProxyHealth,
     pub http: ProxyHealth,
+    pub web: Option<ProxyHealth>,
     pub policy_revision: u64,
     pub policy_unavailable: Option<UnavailableReason>,
 }
@@ -52,6 +53,10 @@ impl RuntimeStatus {
             && self.policy_unavailable.is_none()
             && matches!(self.dns.phase, ProxyPhase::Ready(_))
             && matches!(self.http.phase, ProxyPhase::Ready(_))
+            && self
+                .web
+                .as_ref()
+                .is_none_or(|web| matches!(web.phase, ProxyPhase::Ready(_)))
     }
 }
 #[derive(Clone, Debug)]
@@ -117,6 +122,21 @@ impl Supervisor {
         policy: PolicySubscription,
         cancel: CancellationToken,
     ) -> Result<Self, RuntimeError> {
+        Self::start_services(factory, policy, cancel, false).await
+    }
+    pub async fn start_with_web(
+        factory: Arc<dyn ProxyFactory>,
+        policy: PolicySubscription,
+        cancel: CancellationToken,
+    ) -> Result<Self, RuntimeError> {
+        Self::start_services(factory, policy, cancel, true).await
+    }
+    async fn start_services(
+        factory: Arc<dyn ProxyFactory>,
+        policy: PolicySubscription,
+        cancel: CancellationToken,
+        with_web: bool,
+    ) -> Result<Self, RuntimeError> {
         let cancel = cancel.child_token();
         if cancel.is_cancelled() {
             return Err(RuntimeError::Cancelled);
@@ -129,17 +149,39 @@ impl Supervisor {
                 return Err(error);
             }
         };
+        let web = if with_web {
+            match start_one(&factory, ServiceKind::Web, &cancel).await {
+                Ok(web) => Some(web),
+                Err(error) => {
+                    let _ = http.shutdown().await;
+                    let _ = dns.shutdown().await;
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
+        let web_readiness = web
+            .as_ref()
+            .map(|web| ready(&**web, ServiceKind::Web))
+            .transpose();
         let readiness = ready(&*dns, ServiceKind::Dns)
             .and_then(|dns| ready(&*http, ServiceKind::Http).map(|http| (dns, http)));
         let initial = policy.current();
-        if readiness.is_err() || initial.is_err() || cancel.is_cancelled() {
+        if readiness.is_err() || web_readiness.is_err() || initial.is_err() || cancel.is_cancelled()
+        {
+            if let Some(web) = web {
+                let _ = web.shutdown().await;
+            }
             let _ = http.shutdown().await;
             let _ = dns.shutdown().await;
-            return Err(readiness.err().unwrap_or(if cancel.is_cancelled() {
-                RuntimeError::Cancelled
-            } else {
-                RuntimeError::PolicyUnavailable
-            }));
+            return Err(readiness.err().or(web_readiness.err()).unwrap_or(
+                if cancel.is_cancelled() {
+                    RuntimeError::Cancelled
+                } else {
+                    RuntimeError::PolicyUnavailable
+                },
+            ));
         }
         let (dns_ready, http_ready) = readiness.unwrap();
         let revision = initial.unwrap().revision();
@@ -155,6 +197,11 @@ impl Supervisor {
                 restarts: 0,
                 last_failure: None,
             },
+            web: web_readiness.unwrap().map(|ready| ProxyHealth {
+                phase: ProxyPhase::Ready(ready),
+                restarts: 0,
+                last_failure: None,
+            }),
             policy_revision: revision,
             policy_unavailable: None,
         };
@@ -177,10 +224,19 @@ impl Supervisor {
             children.spawn(supervise(
                 ServiceKind::Http,
                 http,
-                factory,
+                factory.clone(),
                 sender.clone(),
                 token.clone(),
             ));
+            if let Some(web) = web {
+                children.spawn(supervise(
+                    ServiceKind::Web,
+                    web,
+                    factory,
+                    sender.clone(),
+                    token.clone(),
+                ));
+            }
             let mut policy = policy;
             let mut result = loop {
                 tokio::select! {
@@ -290,7 +346,7 @@ fn update(
         change(match kind {
             ServiceKind::Dns => &mut state.dns,
             ServiceKind::Http => &mut state.http,
-            ServiceKind::Web => unreachable!("web is outside Task8"),
+            ServiceKind::Web => state.web.as_mut().expect("web supervision enabled"),
         })
     });
 }

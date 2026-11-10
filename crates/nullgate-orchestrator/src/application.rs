@@ -1,4 +1,4 @@
-//! Composition root: storage, activation and supervised DNS/HTTP, without web startup.
+//! Composition root: storage, activation and supervised DNS/HTTP/web services.
 use crate::{
     ManagedProxy, PolicyCoordinator, PolicyHandle, PolicyOptions, ProxyFactory, RuntimeError,
     RuntimeMonitor, Supervisor,
@@ -32,12 +32,29 @@ impl Application {
         .await
         .map_err(RuntimeError::Policy)?;
         let policy = coordinator.handle();
+        let auth = match nullgate_web::AuthService::open(config.database_path(), config.auth).await
+        {
+            Ok(auth) => auth,
+            Err(_) => {
+                let _ = coordinator.shutdown().await;
+                return Err(RuntimeError::InitialService(ServiceFailure {
+                    service: ServiceKind::Web,
+                    stage: FailureStage::Configure,
+                    transport: None,
+                    code: FailureCode::InvalidConfig,
+                    io_kind: None,
+                }));
+            }
+        };
         let factory = Arc::new(Services {
             config,
+            auth,
+            management: Arc::new(policy.clone()),
             policy: policy.subscribe(),
             tunnels,
         });
-        let supervisor = match Supervisor::start(factory, policy.subscribe(), cancel).await {
+        let supervisor = match Supervisor::start_with_web(factory, policy.subscribe(), cancel).await
+        {
             Ok(supervisor) => supervisor,
             Err(error) => {
                 let _ = coordinator.shutdown().await;
@@ -92,6 +109,8 @@ impl Drop for Application {
 }
 struct Services {
     config: AppConfig,
+    auth: nullgate_web::AuthService,
+    management: Arc<dyn PolicyManagement>,
     policy: PolicySubscription,
     tunnels: TunnelControl,
 }
@@ -106,6 +125,15 @@ impl ManagedProxy for Dns {
 }
 struct Http(HttpService);
 impl ManagedProxy for Http {
+    fn monitor(&self) -> ServiceMonitor {
+        self.0.monitor()
+    }
+    fn shutdown(self: Box<Self>) -> PolicyFuture<'static, Result<(), ServiceFailure>> {
+        Box::pin(async move { self.0.shutdown().await })
+    }
+}
+struct Web(nullgate_web::WebService);
+impl ManagedProxy for Web {
     fn monitor(&self) -> ServiceMonitor {
         self.0.monitor()
     }
@@ -147,13 +175,14 @@ impl ProxyFactory for Services {
                     )
                     .await?,
                 )) as Box<dyn ManagedProxy>),
-                ServiceKind::Web => Err(ServiceFailure {
-                    service: kind,
-                    stage: FailureStage::Configure,
-                    transport: None,
-                    code: FailureCode::InvalidConfig,
-                    io_kind: None,
-                }),
+                ServiceKind::Web => Ok(Box::new(Web(nullgate_web::WebService::start(
+                    self.config.web.clone(),
+                    self.auth.clone(),
+                    self.management.clone(),
+                    limit,
+                    cancel,
+                )
+                .await?)) as Box<dyn ManagedProxy>),
             }
         })
     }

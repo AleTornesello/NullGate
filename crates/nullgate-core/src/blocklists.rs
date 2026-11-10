@@ -47,6 +47,11 @@ pub struct RuleEntry {
     pub rule: Rule,
     pub(crate) input: String,
 }
+impl RuleEntry {
+    pub fn input(&self) -> &str {
+        &self.input
+    }
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BlocklistSource {
     pub id: i64,
@@ -90,6 +95,13 @@ impl RepositorySnapshot {
 /// One atomic logical edit. `at` is an administrator-service supplied Unix timestamp in seconds.
 #[derive(Clone, Debug)]
 pub enum Mutation {
+    /// Atomically create/reuse manual/file provenance and import a valid subset.
+    ImportList {
+        list_id: i64,
+        kind: SourceKind,
+        text: String,
+        at: i64,
+    },
     CreateList {
         name: String,
     },

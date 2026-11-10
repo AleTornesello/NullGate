@@ -42,6 +42,10 @@ pub struct HttpConfig {
 #[serde(deny_unknown_fields)]
 pub struct WebConfig {
     pub listen: SocketAddr,
+    #[serde(default)]
+    pub public_origin: Option<String>,
+    #[serde(default)]
+    pub tls_terminated_by_proxy: bool,
     pub tls: Option<TlsFiles>,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -206,6 +210,41 @@ impl AppConfig {
                         "TCP listener overlaps another configured listener",
                     ));
                 }
+            }
+        }
+        if self.web.tls_terminated_by_proxy
+            && (!self.web.listen.ip().is_loopback()
+                || self.web.tls.is_some()
+                || self.web.public_origin.is_none())
+        {
+            return Err(ConfigError::field(
+                "web.tls_terminated_by_proxy",
+                "TLS offload requires a loopback backend, explicit HTTPS origin and no direct TLS files",
+            ));
+        }
+        if let Some(origin) = &self.web.public_origin {
+            let invalid = || {
+                ConfigError::field(
+                    "web.public_origin",
+                    "Use an explicit matching HTTP(S) origin without credentials, path, query or fragment",
+                )
+            };
+            let normalized = crate::normalize_url(origin).map_err(|_| invalid())?;
+            let secure = self.web.tls.is_some() || self.web.tls_terminated_by_proxy;
+            let path = origin
+                .split_once("://")
+                .and_then(|(_, rest)| rest.split_once('/'))
+                .map(|(_, path)| path);
+            if origin.contains(['?', '#', '@'])
+                || path.is_some_and(|path| !path.is_empty())
+                || normalized.scheme()
+                    != if secure {
+                        crate::HttpScheme::Https
+                    } else {
+                        crate::HttpScheme::Http
+                    }
+            {
+                return Err(invalid());
             }
         }
         if let Some(tls) = &self.web.tls {

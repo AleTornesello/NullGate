@@ -125,6 +125,11 @@ async fn boundary(State(state): State<WebState>, request: Request, next: Next) -
         return AuthError::Forbidden.into_response();
     }
     let mut response = next.run(request).await;
+    response.headers_mut().insert(header::CONTENT_SECURITY_POLICY,HeaderValue::from_static("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"));
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -137,6 +142,11 @@ async fn authorize(State(state): State<WebState>, mut request: Request, next: Ne
     };
     let identity = match state.auth.identity(token.as_deref()).await {
         Ok(identity) => identity,
+        Err(AuthError::Unauthorized)
+            if request.method() == Method::GET && request.uri().path() == "/" =>
+        {
+            return axum::response::Redirect::to("/login").into_response();
+        }
         Err(error) => return error.into_response(),
     };
     if mutating(request.method()) {
@@ -164,7 +174,26 @@ pub fn router(state: WebState, management: Router<WebState>) -> Router {
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/me", get(me))
         .layer(DefaultBodyLimit::max(8192));
-    auth.merge(management)
+    auth.route("/login", get(views::login))
+        .route(
+            "/app.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../assets/app.js"),
+                )
+            }),
+        )
+        .route(
+            "/app.css",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+                    include_str!("../assets/app.css"),
+                )
+            }),
+        )
+        .merge(management)
         .layer(middleware::from_fn_with_state(state.clone(), boundary))
         .with_state(state)
 }
@@ -276,3 +305,10 @@ async fn me(
     let token = cookie(&headers, state.security.session_name())?;
     Ok(Json(state.auth.identity(token.as_deref()).await?))
 }
+
+pub mod blocklists;
+pub mod routes;
+pub mod views;
+pub use routes::management_routes;
+pub mod server;
+pub use server::WebService;

@@ -14,8 +14,13 @@ listen = "127.0.0.1:8080"
 
 [web]
 listen = "127.0.0.1:8081"
+# Optional trusted browser origin. Required for wildcard listeners or TLS offload.
+# public_origin = "https://nullgate.example"
+# TLS offload requires a loopback backend, explicit HTTPS origin, and no [web.tls].
+tls_terminated_by_proxy = false
 # Non-loopback web listeners require [web.tls] certificate_file/private_key_file.
 # TLS file values are references to protected files, never inline key material.
+# Direct HTTPS private keys must be owner-only regular files (for example mode 0600).
 
 [limits]
 storage_queue_capacity = 32

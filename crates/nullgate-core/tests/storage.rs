@@ -711,3 +711,56 @@ fn missing_configuration_fields_name_the_exact_required_key_without_values() {
         assert!(!diagnostic.contains("sensitive-certificate-value"));
     }
 }
+
+#[test]
+fn list_import_creates_provenance_and_rules_in_one_revision_and_rolls_back_together() {
+    let scratch = Scratch::new();
+    let mut repo = SqliteRepository::open(scratch.db()).unwrap();
+    let id = list(&mut repo, "Atomic");
+    let commit = repo
+        .apply(
+            1,
+            Mutation::ImportList {
+                list_id: id,
+                kind: SourceKind::File {
+                    filename: "rules.txt".into(),
+                },
+                text: "valid.invalid\nhttp://site.invalid/ads\nbad rule".into(),
+                at: 1,
+            },
+        )
+        .unwrap();
+    assert_eq!(commit.snapshot.revision, 2);
+    assert_eq!(commit.snapshot.lists[0].sources.len(), 1);
+    assert_eq!(commit.snapshot.lists[0].sources[0].entries.len(), 2);
+    assert_eq!(commit.import_report.unwrap().malformed[0].line, 3);
+    let before = repo.snapshot().unwrap();
+    assert!(
+        repo.apply(
+            2,
+            Mutation::ImportList {
+                list_id: id,
+                kind: SourceKind::File {
+                    filename: "new.txt".into()
+                },
+                text: "x".repeat(nullgate_core::MAX_IMPORT_BYTES + 1),
+                at: 1
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(repo.snapshot().unwrap(), before);
+    repo.apply(
+        2,
+        Mutation::ImportList {
+            list_id: id,
+            kind: SourceKind::File {
+                filename: "rules.txt".into(),
+            },
+            text: "other.invalid".into(),
+            at: 2,
+        },
+    )
+    .unwrap();
+    assert_eq!(repo.snapshot().unwrap().lists[0].sources.len(), 1);
+}

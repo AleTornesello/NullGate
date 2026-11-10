@@ -78,7 +78,7 @@ Local username/password authentication is the configuration default. Provision t
 cargo run --locked --bin nullgate -- provision-admin --config config/nullgate.example.toml --username your-admin-name --password-file /secure/path/nullgate-password
 ```
 
-The command reads and hashes the password without placing it in process arguments or logs. Symlinks, non-regular files, group/other permissions and oversized input are rejected. First-run provisioning is transactional and refuses to overwrite any existing account. Subsequent accounts are created through the Administrator-authorized library API using a live session token; cached role/identity objects are not authority. Account-management UI and web listener startup remain Task 10.
+The command reads and hashes the password without placing it in process arguments or logs. Symlinks, non-regular files, group/other permissions and oversized input are rejected. First-run provisioning is transactional and refuses to overwrite any existing account. Subsequent accounts are created through the Administrator-authorized library API using a live session token; cached role/identity objects are not authority. Web listener and blocklist UI integration are implemented in Task 10; account-management UI remains unimplemented.
 
 Usernames are case-insensitive ASCII, 1–64 letters/digits/dot/underscore/hyphen. Passwords contain 12–1024 UTF-8 bytes, without trimming. Argon2id uses a distinct random salt per password. Sessions are opaque, stored only as SHA256 digests, rotate on login, expire after eight hours and are revoked on logout. There is no sliding idle expiry. Roles and disabled-account state are checked for every request; account creation rechecks Administrator session authority in its write transaction. Authentication changes do not advance the filtering-policy revision.
 
@@ -86,4 +86,28 @@ Usernames are case-insensitive ASCII, 1–64 letters/digits/dot/underscore/hyphe
 
 The library provides `/api/v1/auth/csrf`, `/login`, `/logout` and `/me` beneath the same `/api/v1/auth` prefix. Obtain the JSON CSRF proof first; send its cookie and `X-CSRF-Token` plus the configured Origin for login and browser mutations. Login returns a new proof and host-only HttpOnly session cookie; logout clears and revokes it. Authentication responses are `Cache-Control: no-store`. There is no permissive CORS policy.
 
-Cleartext cookies are allowed only for loopback HTTP. Dedicated deployments must serve the router through HTTPS; cookies then use Secure and a `__Host-` prefix, with HttpOnly, SameSite=Lax, Path=/ and no Domain attribute. An explicit loopback TLS reverse-proxy context accepts a configured HTTPS public origin, never inferred forwarding headers. Task 10 must supply this trusted context and bind the corresponding transport; the authentication library itself does not start a listener.
+Cleartext cookies are allowed only for loopback HTTP. Dedicated deployments must serve the router through HTTPS; cookies then use Secure and a `__Host-` prefix, with HttpOnly, SameSite=Lax, Path=/ and no Domain attribute. An explicit loopback TLS reverse-proxy context accepts a configured HTTPS public origin, never inferred forwarding headers. Task 10 supplies this trusted context and binds the corresponding transport.
+
+
+## Blocklist interface and API (Task 10)
+
+After local Administrator provisioning, start the executable and open its logged `web_origin`. Administrators create/rename/delete lists, add domain and URL rules together, import UTF-8 text files, remove individual memberships and explicitly replace/delete sources. Viewers see the same lists without write controls; server middleware independently rejects their direct write requests. Existing policy is loaded on restart, and successful saves mean the complete revision has been persisted and published to the running proxies.
+
+Manual entries share a Manual provenance group; repeated file imports add to the same filename group. Imports accept valid entries and show original one-based malformed-line diagnostics. All-malformed source replacement preserves its previous rules; an explicit empty replacement clears that source. Replacement wording and confirmation distinguish it from additive import. Sources larger than64KiB are not preloaded into the replacement editor: paste a complete replacement. Names, rule text and diagnostics are escaped; the browser never inserts imported HTML. Native forms use POST even when JavaScript is unavailable, keeping credentials out of URLs; JavaScript is required for the protected editing workflow.
+
+| Method and path | Operation |
+| --- | --- |
+| `GET /api/v1/lists?offset=&limit=` | Paginated list summaries and revision |
+| `POST /api/v1/lists` | Create list (`expected_revision`, `name`) |
+| `GET/PATCH/DELETE /api/v1/lists/{id}` | Read sources, rename or delete list |
+| `POST /api/v1/lists/{id}/rules` | Add manual rules (`expected_revision`, `text`) |
+| `POST /api/v1/lists/{id}/imports?expected_revision=&filename=` | Import raw `text/plain` UTF-8 bytes |
+| `GET/PUT /api/v1/sources/{id}/entries` | Paginated entries or explicit complete replacement |
+| `POST /api/v1/sources/{id}/remove` | Remove one membership (`expected_revision`, `rule`) |
+| `DELETE /api/v1/sources/{id}` | Remove a Manual/File source |
+
+Mutations require current revision, session/role, Origin and CSRF checks. Conflicts are409 and never automatically retried; inputs remain in the editor. Capacity/no-valid-replacement failures are422. Storage unavailability, unknown outcomes and committed-but-inactive revisions use distinct machine codes so callers can reconcile rather than blindly repeat a save. Response diagnostics are capped at1,000 with total/truncation indicators; API pages cap at100 items and HTML pages use smaller bounds. Raw file bytes cap at4MiB, manual encoded JSON at4MiB+8192; small mutations have tighter bounds.
+
+Direct cleartext is loopback-only. Set `web.public_origin` for wildcard listen addresses and dedicated hostnames; direct HTTPS requires certificate/key references, with owner-only private-key files. `web.tls_terminated_by_proxy=true` is an explicit loopback-only alternative with an HTTPS public origin and no direct TLS files. Forwarded headers are ignored. Startup fails and releases already-bound peers if web binding/TLS setup fails. All three services participate in readiness, supervision and cancellation. Remote URL importing/refresh is not included in this milestone.
+
+With Python Playwright and Chromium available, run `python3 scripts/browser_smoke.py` after building the binary. It provisions temporary local state, creates rules through a real browser, verifies local proxy decisions, imports a file and checks removal/shutdown. It uses no public upstreams and writes screenshots/metadata to its artifact directory.

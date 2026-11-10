@@ -83,7 +83,9 @@ fn enqueue(sender: &mpsc::Sender<Command>, command: Command) -> Result<(), Polic
 }
 fn check_request_size(mutation: &Mutation) -> Result<(), PolicyError> {
     let error = match mutation {
-        Mutation::Import { text, .. } | Mutation::ReplaceEntries { text, .. }
+        Mutation::Import { text, .. }
+        | Mutation::ReplaceEntries { text, .. }
+        | Mutation::ImportList { text, .. }
             if text.len() > MAX_IMPORT_BYTES =>
         {
             Some(StorageError::ImportTooLarge)

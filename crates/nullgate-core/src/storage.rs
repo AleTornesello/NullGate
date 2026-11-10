@@ -284,6 +284,41 @@ fn edit(
     mutation: Mutation,
 ) -> Result<Option<ImportReport>, StorageError> {
     match mutation {
+        Mutation::ImportList {
+            list_id,
+            kind,
+            text,
+            at,
+        } => {
+            if text.len() > crate::MAX_IMPORT_BYTES {
+                return Err(StorageError::ImportTooLarge);
+            }
+            valid_source(&kind)?;
+            check_time(at)?;
+            if matches!(kind, SourceKind::Remote { .. }) {
+                return Err(StorageError::InvalidSource);
+            }
+            let list = snapshot
+                .lists
+                .iter_mut()
+                .find(|list| list.id == list_id)
+                .ok_or(StorageError::NotFound)?;
+            let index =
+                if let Some(index) = list.sources.iter().position(|source| source.kind == kind) {
+                    index
+                } else {
+                    list.sources.push(BlocklistSource {
+                        id: allocate(next_id)?,
+                        kind,
+                        entries: Vec::new(),
+                        last_attempt: None,
+                        last_success: None,
+                        last_report: None,
+                    });
+                    list.sources.len() - 1
+                };
+            return import_into(&mut list.sources[index], &text, at, false).map(Some);
+        }
         Mutation::CreateList { name } => {
             valid_name(&name)?;
             if snapshot.lists.iter().any(|list| list.name == name) {
