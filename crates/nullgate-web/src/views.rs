@@ -68,7 +68,8 @@ pub async fn index(
 ) -> Result<Html<String>, ApiError> {
     let snapshot = snapshot(&state)?;
     let remote = state.remote.is_some();
-    tokio::task::spawn_blocking(move || dashboard(&snapshot, &identity, screen, remote))
+    let public_ca = state.public_ca.is_some();
+    tokio::task::spawn_blocking(move || dashboard(&snapshot, &identity, screen, remote, public_ca))
         .await
         .map_err(|_| nullgate_core::PolicyError::WorkerFailed.into())
 }
@@ -77,6 +78,7 @@ fn dashboard(
     identity: &Identity,
     screen: Screen,
     remote: bool,
+    public_ca: bool,
 ) -> Html<String> {
     let repo = snapshot.repository();
     let admin = identity.role == Role::Administrator;
@@ -119,6 +121,10 @@ fn dashboard(
              label {"New blocklist" input name="name" placeholder="e.g. Everyday browsing" required maxlength="128";}
              button type="submit" {"Create list"}
             }
+           }
+           @if admin && public_ca {
+            p {a.button.secondary href="/api/v1/certificates/ca" download="nullgate-inspection-ca.pem" {"Download public CA"}}
+            p.small {"Install this certificate only on clients you manage. HTTPS inspection is not enabled yet."}
            }
            p.sidebar-note {"Domain and URL rules can share a list. Changes apply to all configured clients."}
           }

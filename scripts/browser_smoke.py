@@ -148,6 +148,18 @@ listen = "127.0.0.1:0"
                     assert removed.value.status == 200
                     expect(page.locator("#feedback")).to_contain_text(f"Saved revision {revision}.")
                     assert filtered("/ads")[0] == 200
+                    with page.expect_download() as downloaded:
+                        page.get_by_role("link", name="Download public CA", exact=True).click()
+                    download = downloaded.value
+                    assert download.suggested_filename == "nullgate-inspection-ca.pem"
+                    certificate = Path(download.path()).read_bytes()
+                    assert certificate.count(b"-----BEGIN CERTIFICATE-----") == 1
+                    assert b"PRIVATE KEY" not in certificate
+                    private_bundle = (temp / "data" / "inspection-ca" / "material.bin").read_bytes()
+                    cert_size = int.from_bytes(private_bundle[8:12], "big")
+                    private_key = private_bundle[16 + cert_size:]
+                    assert private_key not in certificate
+                    (artifacts / "inspection-ca.pem").write_bytes(certificate)
                     # Production fetch policy must deny the local origin before any HTTP access.
                     before = Origin.requests
                     page.locator('input[name="url"]').fill(target + "/remote-list")
@@ -175,8 +187,10 @@ listen = "127.0.0.1:0"
                 process = None
             log = log_path.read_text()
             assert password not in log and "nullgate_session=" not in log
+            assert "PRIVATE KEY" not in log
+            assert private_key not in log.encode()
             assert "runtime stopped" in log
-        print(json.dumps({"result": "passed", "checks": ["local Administrator login", "list creation", "mixed manual import diagnostics", "browser and HTTP proxy 200->403", "file import diagnostics", "rule removal 403->200", "remote import/refresh denies private destination before fetch", "clean shutdown"], "screenshot": str(artifacts / "blocklists.png")}))
+        print(json.dumps({"result": "passed", "checks": ["local Administrator login", "list creation", "mixed manual import diagnostics", "browser and HTTP proxy 200->403", "file import diagnostics", "rule removal 403->200", "remote import/refresh denies private destination before fetch", "Administrator public-CA download without private key", "clean shutdown"], "screenshot": str(artifacts / "blocklists.png")}))
     finally:
         if process is not None:
             process.terminate()

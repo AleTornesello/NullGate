@@ -71,6 +71,27 @@ impl WebService {
         limit: usize,
         cancel: CancellationToken,
     ) -> Result<Self, ServiceFailure> {
+        Self::start_with_capabilities(
+            config,
+            auth,
+            management,
+            crate::WebCapabilities {
+                remote,
+                public_ca: None,
+            },
+            limit,
+            cancel,
+        )
+        .await
+    }
+    pub async fn start_with_capabilities(
+        config: WebConfig,
+        auth: AuthService,
+        management: Arc<dyn PolicyManagement>,
+        capabilities: crate::WebCapabilities,
+        limit: usize,
+        cancel: CancellationToken,
+    ) -> Result<Self, ServiceFailure> {
         if limit == 0
             || limit > 65535
             || config.tls_terminated_by_proxy
@@ -159,7 +180,8 @@ impl WebService {
         }
         .map_err(|_| failure(FailureStage::Configure, FailureCode::InvalidConfig, None))?;
         let mut state = WebState::new(auth, security, management);
-        state.remote = remote;
+        state.remote = capabilities.remote;
+        state.public_ca = capabilities.public_ca;
         let router = crate::router(state, management_routes()).layer(
             middleware::from_fn_with_state(Arc::new(Semaphore::new(limit.min(16))), admission),
         );

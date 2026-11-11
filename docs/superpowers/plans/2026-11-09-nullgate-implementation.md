@@ -187,7 +187,7 @@ Recommended starting stack: Tokio, Hickory DNS protocol support, Hyper, rustls/t
 
 ### 12. Generate and manage the inspection CA — P1
 
-- [ ] Create persistent CA material and expose public-certificate download.
+- [x] Create persistent CA material and expose public-certificate download. See [Task 12 contracts and validation](../../implementation-decisions.md#task-12-inspection-ca-contracts).
 
 **Depends on:** Tasks 3 and 9–10.
 **Files:** `crates/nullgate-http/src/ca.rs`; `crates/nullgate-web/src/certificates.rs`; `crates/nullgate-http/tests/ca.rs`; `crates/nullgate-web/tests/certificates.rs`.

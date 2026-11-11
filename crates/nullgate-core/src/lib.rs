@@ -39,3 +39,6 @@ pub use accounts::{AccountCreation, AuthRepository, Identity, Role};
 
 pub mod remote;
 pub use remote::*;
+
+pub mod certificates;
+pub use certificates::PublicCaCertificate;

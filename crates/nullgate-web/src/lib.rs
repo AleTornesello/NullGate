@@ -24,6 +24,7 @@ pub struct WebState {
     pub security: WebSecurity,
     pub management: Arc<dyn PolicyManagement>,
     pub remote: Option<Arc<dyn nullgate_core::RemoteManagement>>,
+    pub public_ca: Option<Arc<dyn nullgate_core::PublicCaCertificate>>,
 }
 impl WebState {
     pub fn new(
@@ -36,6 +37,7 @@ impl WebState {
             security,
             management,
             remote: None,
+            public_ca: None,
         }
     }
 }
@@ -322,3 +324,16 @@ pub mod server;
 pub use server::WebService;
 
 pub mod imports;
+
+pub mod certificates;
+#[derive(Clone, Default)]
+pub struct WebCapabilities {
+    pub remote: Option<Arc<dyn nullgate_core::RemoteManagement>>,
+    pub public_ca: Option<Arc<dyn nullgate_core::PublicCaCertificate>>,
+}
+impl WebState {
+    pub fn with_public_ca(mut self, public: Arc<dyn nullgate_core::PublicCaCertificate>) -> Self {
+        self.public_ca = Some(public);
+        self
+    }
+}

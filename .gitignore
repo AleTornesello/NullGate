@@ -1,1 +1,5 @@
 /target/
+
+# Runtime state and private inspection-CA bundles must never enter source control.
+/data/
+**/inspection-ca/

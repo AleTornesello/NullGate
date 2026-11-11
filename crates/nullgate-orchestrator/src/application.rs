@@ -46,8 +46,24 @@ impl Application {
                 }));
             }
         };
+        let data_dir = config.data_dir.clone();
+        let public_ca = match tokio::task::spawn_blocking(move || {
+            nullgate_http::ca::CaProvider::open(&data_dir).map(|ca| ca.public_certificate())
+        })
+        .await
+        {
+            Ok(Ok(public)) => public,
+            result => {
+                let _ = coordinator.shutdown().await;
+                return Err(RuntimeError::InspectionCa(match result {
+                    Ok(Err(error)) => error,
+                    _ => nullgate_http::ca::CaError::Crypto,
+                }));
+            }
+        };
         let factory = Arc::new(Services {
             config,
+            public_ca,
             auth,
             management: Arc::new(policy.clone()),
             remote: Arc::new(crate::imports::RemoteService::new(
@@ -118,6 +134,7 @@ impl Drop for Application {
 struct Services {
     config: AppConfig,
     auth: nullgate_web::AuthService,
+    public_ca: Arc<dyn nullgate_core::PublicCaCertificate>,
     management: Arc<dyn PolicyManagement>,
     remote: Arc<dyn nullgate_core::RemoteManagement>,
     policy: PolicySubscription,
@@ -184,15 +201,20 @@ impl ProxyFactory for Services {
                     )
                     .await?,
                 )) as Box<dyn ManagedProxy>),
-                ServiceKind::Web => Ok(Box::new(Web(nullgate_web::WebService::start_with_remote(
-                    self.config.web.clone(),
-                    self.auth.clone(),
-                    self.management.clone(),
-                    Some(self.remote.clone()),
-                    limit,
-                    cancel,
-                )
-                .await?)) as Box<dyn ManagedProxy>),
+                ServiceKind::Web => Ok(Box::new(Web(
+                    nullgate_web::WebService::start_with_capabilities(
+                        self.config.web.clone(),
+                        self.auth.clone(),
+                        self.management.clone(),
+                        nullgate_web::WebCapabilities {
+                            remote: Some(self.remote.clone()),
+                            public_ca: Some(self.public_ca.clone()),
+                        },
+                        limit,
+                        cancel,
+                    )
+                    .await?,
+                )) as Box<dyn ManagedProxy>),
             }
         })
     }

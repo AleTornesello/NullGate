@@ -27,6 +27,7 @@ tokio-rustls.workspace = true
 rustls-pemfile = "=2.2.0"
 
 [dev-dependencies]
+nullgate-http.workspace = true
 rcgen.workspace = true
 tower = { version = "=0.5.3", features = ["util"] }
 http-body-util.workspace = true

@@ -91,6 +91,7 @@ impl RuntimeMonitor {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RuntimeError {
+    InspectionCa(nullgate_http::ca::CaError),
     InitialService(ServiceFailure),
     InvalidReadiness(ServiceKind),
     Policy(PolicyError),
@@ -101,6 +102,7 @@ pub enum RuntimeError {
 impl fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InspectionCa(error) => write!(f, "Initial startup failed: {error}"),
             Self::InitialService(error) => write!(f, "Initial startup failed: {error}"),
             Self::InvalidReadiness(kind) => write!(f, "{kind:?} reported invalid readiness"),
             Self::Policy(error) => write!(f, "Policy owner failed: {error}"),

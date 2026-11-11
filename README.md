@@ -6,7 +6,7 @@ Run NullGate on the same machine as your browser or on a dedicated server servin
 
 ## Project status
 
-The executable now loads TOML configuration and runs supervised DNS (UDP/TCP), HTTP filtering and opaque CONNECT passthrough over durable SQLite policy. It reports readiness after listener binding, restarts failed proxies with bounded backoff, and handles SIGINT/SIGTERM cleanup. The authenticated Rust web interface now supports mixed blocklists, manual entries and plain-text file imports with line diagnostics and immediate publication. Administrator-triggered remote imports and refreshes are supported with bounded public-network fetching and per-source replacement. Metrics and TLS inspection remain later work. HTTPS URL rules are parsed and stored but are not enforced inside CONNECT; URL-only hosts stay permitted.
+The executable now loads TOML configuration and runs supervised DNS (UDP/TCP), HTTP filtering and opaque CONNECT passthrough over durable SQLite policy. It reports readiness after listener binding, restarts failed proxies with bounded backoff, and handles SIGINT/SIGTERM cleanup. The authenticated Rust web interface now supports mixed blocklists, manual entries and plain-text file imports with line diagnostics and immediate publication. Administrator-triggered remote imports and refreshes are supported with bounded public-network fetching and per-source replacement. A persistent local inspection CA supports hostname certificate issuance and Administrator-only public-certificate downloads; HTTPS interception remains disabled. Metrics and TLS inspection remain later work. HTTPS URL rules are parsed and stored but are not enforced inside CONNECT; URL-only hosts stay permitted.
 
 ## Planned feature set
 

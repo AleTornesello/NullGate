@@ -641,3 +641,38 @@ async fn web_api_changes_persist_and_immediately_filter_running_proxy() {
     );
     assert!(TcpListener::bind(web).await.is_ok());
 }
+
+#[tokio::test]
+async fn corrupt_ca_fails_before_readiness_without_replacing_material() {
+    let scratch = Scratch::new();
+    let upstream = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let cfg = config(&scratch, upstream.local_addr().unwrap());
+    let app = nullgate_orchestrator::Application::start(cfg.clone(), CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(app.monitor().current().is_ready());
+    app.shutdown().await.unwrap();
+    let bundle = cfg.data_dir.join("inspection-ca/material.bin");
+    let marker = b"isolated-private-marker-not-to-be-logged";
+    std::fs::write(&bundle, marker).unwrap();
+    let error = nullgate_orchestrator::Application::start(cfg.clone(), CancellationToken::new())
+        .await
+        .err()
+        .unwrap();
+    assert!(matches!(
+        error,
+        nullgate_orchestrator::RuntimeError::InspectionCa(nullgate_http::ca::CaError::Corrupt)
+    ));
+    let message = format!("{error:?} {error}");
+    assert!(message.contains("Inspection CA"));
+    assert!(!message.contains("isolated-private-marker"));
+    assert!(std::fs::read(bundle).unwrap() == marker);
+    // The failed startup drains the policy worker; reopening storage remains possible.
+    let coordinator = nullgate_orchestrator::PolicyCoordinator::open(
+        cfg.database_path(),
+        nullgate_orchestrator::PolicyOptions::default(),
+    )
+    .await
+    .unwrap();
+    coordinator.shutdown().await.unwrap();
+}

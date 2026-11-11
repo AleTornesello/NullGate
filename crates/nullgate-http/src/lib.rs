@@ -7,3 +7,5 @@ pub use server::{HttpOptions, HttpService};
 
 pub mod tunnel;
 pub use tunnel::{HttpCapabilities, TunnelControl};
+
+pub mod ca;
