@@ -35,10 +35,15 @@ pub mod service;
 pub use service::*;
 
 pub mod accounts;
-pub use accounts::{AccountCreation, AuthRepository, Identity, Role};
+pub use accounts::{AccountCreation, AuthRepository, ExternalLogin, Identity, Role};
 
 pub mod remote;
 pub use remote::*;
 
 pub mod certificates;
 pub use certificates::PublicCaCertificate;
+
+mod oidc_config;
+pub use oidc_config::OidcConfig;
+
+pub mod metrics;

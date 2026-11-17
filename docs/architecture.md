@@ -1,6 +1,6 @@
 # Architecture
 
-NullGate consists of four components, all written in Rust. The initial scaffold uses separate library crates and one executable. Task 1 selects runtime and interface contracts in [implementation decisions](implementation-decisions.md); the shared rule engine, TOML configuration, SQLite repository, live-policy coordinator and cancellable DNS/HTTP library services with opaque CONNECT passthrough are implemented; the executable now delegates startup, supervision and shutdown to orchestration; local web authentication/role middleware and offline provisioning are available; the web listener and blocklist interface are integrated; TLS inspection remains unimplemented.
+NullGate consists of four components, all written in Rust. The initial scaffold uses separate library crates and one executable. Task 1 selects runtime and interface contracts in [implementation decisions](implementation-decisions.md); the shared rule engine, TOML configuration, SQLite repository, live-policy coordinator and cancellable DNS/HTTP library services with opaque CONNECT passthrough are implemented; the executable now delegates startup, supervision and shutdown to orchestration; local web authentication/role middleware and offline provisioning are available; the web listener and blocklist interface are integrated; selective HTTPS inspection is implemented for HTTP/1.1 with the persistent local CA.
 
 ## DNS proxy
 
@@ -14,7 +14,7 @@ Initial DNS uses UDP and TCP, retries truncated UDP replies over TCP, and tries 
 
 Clients select the HTTP proxy through browser or operating system proxy settings. The proxy enforces domain and URL rules and returns an empty HTTP 403 response when a request is blocked. It does not display a block page.
 
-The library currently supports unencrypted HTTP filtering and opaque CONNECT tunnels. It reports HTTPS URL filtering as unavailable through `HttpService::capabilities()` and a successful CONNECT response header; URL-only hosts stay permitted. Existing tunnels close on domain blocks or inspection-selection changes. The HTTP tunnel control implements core policy activation for acknowledgement after selective cleanup; Task 8 injects the same control into the coordinator and every supervised HTTP generation. The executable starts DNS/HTTP/web and reports aggregate readiness and health.
+The library supports unencrypted HTTP filtering, opaque CONNECT and explicitly injected selective HTTPS inspection. The executable retains the CA signer and verified system-root client TLS configuration, enabling inspection for HTTPS URL-listed hosts. `HttpService::capabilities()` reports whether inspection was injected; legacy standalone constructors without a signer remain explicitly unavailable. Existing connections close on domain blocks or inspection-selection changes, while path edits apply per request. Tunnel control acknowledges activation after nested inspected sockets/drivers have closed. Public web state receives only certificate bytes, never the signer. The executable starts DNS/HTTP/web and reports aggregate readiness and health.
 
 For unencrypted HTTP, the proxy can evaluate URL paths directly. For HTTPS, URL paths are encrypted, so matching them requires TLS inspection:
 
@@ -43,7 +43,7 @@ Malformed imported rules are reported and ignored; valid rules are accepted.
 
 The web interface provides blocklist management, metrics, and administration. Administrators can create lists, add rules, import lists, trigger remote updates, and download the public CA certificate. Viewers can read metrics and blocklists without changing them.
 
-Selected stack: Tokio, Hickory protocol support, Hyper, rustls/tokio-rustls, rcgen, Axum/Maud, SQLite, TOML and tracing. A revision-aware `/api/v1` management API and Rust-rendered HTML call the same injected core management interface; web never depends on the orchestrator. The confirmed metrics are process-lifetime aggregates without request history. Details and tests are recorded in implementation decisions. See [Administration](administration.md) for access rules.
+Selected stack: Tokio, Hickory protocol support, Hyper, rustls/tokio-rustls, rcgen, Axum/Maud, SQLite, TOML and tracing. A revision-aware `/api/v1` management API and Rust-rendered HTML call the same injected core management interface; web never depends on the orchestrator. Task 15 adds a fixed-cardinality core metrics collector, owner-side DNS/HTTP(S)/import instrumentation, and an orchestrator adapter of live supervisor health. The read-only web interface consumes core snapshots at `/dashboard` and `/api/v1/metrics`; Administrators and Viewers can read them. The confirmed metrics are process-lifetime aggregates without request history, retained across supervised proxy restarts and reset on process restart. Details and tests are recorded in implementation decisions. See [Administration](administration.md) for access rules.
 
 ## Workspace dependency direction
 
@@ -52,4 +52,4 @@ Selected stack: Tokio, Hickory protocol support, Hyper, rustls/tokio-rustls, rcg
 - Each service crate → `nullgate-core`.
 - `nullgate-core` has no internal workspace dependencies; third-party libraries may provide normalization, configuration and storage.
 
-These manifest dependencies reserve the component boundaries. Core now exposes typed normalization, import reports, immutable matching, startup configuration and transactional blocklist repository and policy read/write APIs. Orchestration implements the core-owned object-safe management trait; service crates receive subscriptions and never depend on the orchestrator. Service wiring remains unimplemented. See the [README](../README.md#development) for build and check commands.
+These manifest dependencies reserve the component boundaries. Core now exposes typed normalization, import reports, immutable matching, startup configuration and transactional blocklist repository and policy read/write APIs. Orchestration implements the core-owned object-safe management trait; service crates receive subscriptions and never depend on the orchestrator. The executable wires the services through orchestration. See [system verification](system-verification.md) for behavioral coverage and [deployment](deployment.md) for installation.

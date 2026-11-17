@@ -66,6 +66,13 @@ impl WebSecurity {
             "nullgate_csrf"
         }
     }
+    pub(crate) fn oidc_name(&self) -> &'static str {
+        if self.secure {
+            "__Host-nullgate_oidc"
+        } else {
+            "nullgate_oidc"
+        }
+    }
     pub(crate) fn host_ok(&self, headers: &HeaderMap) -> bool {
         let mut hosts = headers.get_all(axum::http::header::HOST).iter();
         let host = hosts.next();

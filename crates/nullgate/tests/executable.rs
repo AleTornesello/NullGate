@@ -12,13 +12,15 @@ use tokio::{
 struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "nullgate-executable-{}-{stamp}",
-            std::process::id()
+            "nullgate-executable-{}-{stamp}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir(&path).unwrap();
         Self(path)
@@ -386,4 +388,189 @@ fn provisioning_rejects_a_fifo_without_waiting_for_a_writer() {
         "non-regular password file blocked provisioning"
     );
     assert!(!outcome.unwrap().success());
+}
+
+#[tokio::test]
+async fn real_binary_selectively_filters_https_with_isolated_upstream_and_client_trust() {
+    use rustls::pki_types::{PrivatePkcs8KeyDer, ServerName};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let scratch = Scratch::new();
+    let dns = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = origin.local_addr().unwrap();
+    let certificate =
+        rcgen::generate_simple_self_signed(vec!["127.0.0.1".into(), "localhost".into()]).unwrap();
+    let root_file = scratch.0.join("upstream-roots.pem");
+    std::fs::write(&root_file, certificate.cert.pem()).unwrap();
+    let empty = scratch.0.join("empty-roots");
+    std::fs::create_dir(&empty).unwrap();
+    let origin_der = certificate.cert.der().clone();
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![origin_der.clone()],
+        PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let count = Arc::new(AtomicUsize::new(0));
+    let requests = count.clone();
+    let origin_job = tokio::spawn(async move {
+        let mut jobs = tokio::task::JoinSet::new();
+        loop {
+            let (stream, _) = origin.accept().await.unwrap();
+            let acceptor = acceptor.clone();
+            let count = count.clone();
+            jobs.spawn(async move {
+                let Ok(mut stream) = acceptor.accept(stream).await else {
+                    return;
+                };
+                let mut head = vec![];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match stream.read_u8().await {
+                        Ok(byte) => head.push(byte),
+                        Err(_) => return,
+                    }
+                }
+                count.fetch_add(1, Ordering::SeqCst);
+                assert!(head.starts_with(b"GET /allowed?kept=1 HTTP/1.1"));
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\norigin",
+                    )
+                    .await
+                    .unwrap();
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+    seed(&scratch, &format!("https://{address}"));
+    let config = scratch.config(
+        dns.local_addr().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+    );
+    let log = scratch.0.join("https-runtime.log");
+    let output = std::fs::File::create(&log).unwrap();
+    let mut child = ChildGuard(
+        Command::new(env!("CARGO_BIN_EXE_nullgate"))
+            .arg("--config")
+            .arg(config)
+            .env("SSL_CERT_FILE", &root_file)
+            .env("SSL_CERT_DIR", &empty)
+            .env("RUST_LOG", "info")
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(output))
+            .spawn()
+            .unwrap(),
+    );
+    let proxy = bounded(async {
+        let mut interval = tokio::time::interval(Duration::from_millis(10));
+        loop {
+            interval.tick().await;
+            let text = std::fs::read_to_string(&log).unwrap();
+            if let Some(line) = text.lines().find(|line| line.contains("runtime ready")) {
+                assert!(line.contains("https_url_filtering=true"));
+                break line
+                    .split_whitespace()
+                    .find_map(|part| part.strip_prefix("http="))
+                    .unwrap()
+                    .parse::<std::net::SocketAddr>()
+                    .unwrap();
+            }
+            assert!(child.0.try_wait().unwrap().is_none(), "{text}");
+        }
+    })
+    .await;
+    let ca = nullgate_http::ca::CaProvider::open(&scratch.0.join("data")).unwrap();
+    let public = ca.public_certificate().certificate_pem();
+    let root = pem::parse(public).unwrap().into_contents();
+    for (host, path, status, inspected) in [
+        ("127.0.0.1", "/blocked?ignored=1", 403, true),
+        ("127.0.0.1", "/allowed?kept=1", 200, true),
+        ("localhost", "/allowed?kept=1", 200, false),
+    ] {
+        let mut stream = TcpStream::connect(proxy).await.unwrap();
+        stream
+            .write_all(
+                format!(
+                    "CONNECT {host}:{} HTTP/1.1\r\nHost: {host}:{}\r\n\r\n",
+                    address.port(),
+                    address.port()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut head = vec![];
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(bounded(stream.read_u8()).await.unwrap());
+        }
+        assert!(head.starts_with(b"HTTP/1.1 200"));
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(if inspected {
+                root.clone().into()
+            } else {
+                origin_der.clone()
+            })
+            .unwrap();
+        let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let mut tls = bounded(
+            tokio_rustls::TlsConnector::from(Arc::new(config))
+                .connect(ServerName::try_from(host.to_owned()).unwrap(), stream),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tls.get_ref().1.peer_certificates().unwrap()[0] == origin_der,
+            !inspected
+        );
+        tls.write_all(format!("GET {path} HTTP/1.1\r\nHost: {host}:{}\r\nAuthorization: Bearer NEVER-LOG-HTTPS-CREDENTIAL\r\nConnection: close\r\n\r\n",address.port()).as_bytes()).await.unwrap();
+        let mut bytes = vec![];
+        bounded(tls.read_to_end(&mut bytes)).await.unwrap();
+        assert!(bytes.starts_with(format!("HTTP/1.1 {status}").as_bytes()));
+        if status == 403 {
+            assert!(bytes.ends_with(b"\r\n\r\n"));
+        } else {
+            assert!(bytes.ends_with(b"origin"));
+        }
+    }
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &child.0.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let exit = bounded(async {
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                break status;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(exit.success());
+    origin_job.abort();
+    let text = std::fs::read_to_string(log).unwrap();
+    assert!(text.contains("runtime stopped"));
+    assert!(!text.contains("NEVER-LOG-HTTPS-CREDENTIAL"));
+    assert!(!text.contains("PRIVATE KEY"));
 }

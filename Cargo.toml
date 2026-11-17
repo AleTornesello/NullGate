@@ -14,6 +14,7 @@ default-members = ["crates/nullgate"]
 version = "0.1.0"
 edition = "2024"
 publish = false
+license = "MIT"
 
 [workspace.dependencies]
 nullgate-core = { path = "crates/nullgate-core" }
@@ -58,3 +59,11 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = "warn"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"
+debug = 0
+incremental = false
+# Keep panic unwinding: service supervision observes worker failures.

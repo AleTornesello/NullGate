@@ -21,7 +21,7 @@ pub struct Screen {
     #[serde(default)]
     pub rule_offset: usize,
 }
-fn shell(title: &str, page: &str, content: Markup) -> Html<String> {
+pub(crate) fn shell(title: &str, page: &str, content: Markup) -> Html<String> {
     Html(html!{
  (DOCTYPE)
  html lang="en" {
@@ -69,9 +69,19 @@ pub async fn index(
     let snapshot = snapshot(&state)?;
     let remote = state.remote.is_some();
     let public_ca = state.public_ca.is_some();
-    tokio::task::spawn_blocking(move || dashboard(&snapshot, &identity, screen, remote, public_ca))
-        .await
-        .map_err(|_| nullgate_core::PolicyError::WorkerFailed.into())
+    let https_inspection = state.https_inspection;
+    tokio::task::spawn_blocking(move || {
+        dashboard(
+            &snapshot,
+            &identity,
+            screen,
+            remote,
+            public_ca,
+            https_inspection,
+        )
+    })
+    .await
+    .map_err(|_| nullgate_core::PolicyError::WorkerFailed.into())
 }
 fn dashboard(
     snapshot: &PolicySnapshot,
@@ -79,6 +89,7 @@ fn dashboard(
     screen: Screen,
     remote: bool,
     public_ca: bool,
+    https_inspection: bool,
 ) -> Html<String> {
     let repo = snapshot.repository();
     let admin = identity.role == Role::Administrator;
@@ -93,7 +104,7 @@ fn dashboard(
         html! {
          header.topbar {
           a.brand href="/" {"N" span {"NullGate"}}
-          nav {span.active {"Blocklists"}}
+          nav {a href="/dashboard" {"Dashboard"} span.active {"Blocklists"}}
           div.account {
            span.role {(if admin{"Administrator"}else{"Viewer · read only"})}
            span {(identity.username.as_deref().unwrap_or("Authentication disabled"))}
@@ -124,14 +135,15 @@ fn dashboard(
            }
            @if admin && public_ca {
             p {a.button.secondary href="/api/v1/certificates/ca" download="nullgate-inspection-ca.pem" {"Download public CA"}}
-            p.small {"Install this certificate only on clients you manage. HTTPS inspection is not enabled yet."}
+            p.small {(if https_inspection {"Install this certificate on managed clients to filter URL-listed HTTPS hosts."}else{"Install this certificate only on clients you manage. HTTPS inspection is not enabled yet."})}
            }
            p.sidebar-note {"Domain and URL rules can share a list. Changes apply to all configured clients."}
           }
           section.main-panel {
            div.page-heading {div {p.eyebrow {"SHARED FILTERING POLICY"} h1 {"Blocklists"} p.muted {"Choose what gets through."}} span.revision {"Revision " (rev)}}
            div id="feedback" role="status" aria-live="polite" {}
-           div.notice {strong {"HTTPS path filtering is not available yet."} " Domain rules apply to HTTPS connections; URL-only hosts continue through without inspection."}
+           @if https_inspection {div.notice {strong {"Selective HTTPS filtering is active."} " URL-listed HTTPS hosts require the NullGate CA and HTTP/1.1. Unlisted hosts retain end-to-end TLS passthrough."}}
+           @else {div.notice {strong {"HTTPS path filtering is not available yet."} " Domain rules apply to HTTPS connections; URL-only hosts continue through without inspection."}}
            @if let Some(list)=selected {(list_detail(list,&screen,admin,rev,remote))}
            @else {section.card.empty {h2 {"Your policy starts here"} p.muted {(if admin{"Create a list, then add domains and URLs or import a text file."}else{"No blocklists have been created yet."})}}}
            footer {"Saved changes are persisted and published before success is reported. Existing in-flight requests may finish."}
@@ -247,4 +259,20 @@ fn source_detail(
       }
      }
     }
+}
+
+pub async fn external_login() -> Html<String> {
+    shell(
+        "Sign in",
+        "login",
+        html! {
+         main.login {a.brand href="/" {"N" span {"NullGate"}} section.login-card {
+         p.eyebrow {"ADMINISTRATION"} h1 {"Welcome back"} p.muted {"Continue with your configured identity provider. Your provider's trusted roles determine access."}
+         form data-kind="oidc" method="post" action="/api/v1/auth/oidc/start" {button type="submit" {"Continue with identity provider"}}
+         noscript {p {"JavaScript is required to start sign-in securely."}}
+         div id="feedback" role="status" aria-live="polite" {}
+         p.small {"Signing out revokes this session, then redirects to the provider to complete sign-out."}
+         }}
+        },
+    )
 }

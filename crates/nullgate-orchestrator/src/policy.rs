@@ -16,6 +16,7 @@ use tokio::task::JoinHandle;
 
 /// Runtime integration supplies the configured queue bound. Activation deadline covers all hooks.
 pub struct PolicyOptions {
+    pub metrics: nullgate_core::metrics::Metrics,
     pub queue_capacity: usize,
     pub activation_timeout: Duration,
     pub activators: Vec<Arc<dyn PolicyActivation>>,
@@ -23,6 +24,7 @@ pub struct PolicyOptions {
 impl Default for PolicyOptions {
     fn default() -> Self {
         Self {
+            metrics: nullgate_core::metrics::Metrics::default(),
             queue_capacity: 32,
             activation_timeout: Duration::from_secs(5),
             activators: Vec::new(),
@@ -187,6 +189,31 @@ impl PolicyCoordinator {
                         mutation,
                         reply,
                     } => {
+                        let is_import = matches!(
+                            &mutation,
+                            Mutation::Import { .. }
+                                | Mutation::ImportList { .. }
+                                | Mutation::ReplaceEntries { .. }
+                                | Mutation::RemoteSourceAttempt { .. }
+                                | Mutation::RecordFetchFailure { .. }
+                        );
+                        let fetch_failed = matches!(
+                            &mutation,
+                            Mutation::RemoteSourceAttempt { text: None, .. }
+                                | Mutation::RecordFetchFailure { .. }
+                        );
+                        // Refreshes use Import with existing provenance, while first imports
+                        // use RemoteSourceAttempt. Both preserve prior rules on empty content.
+                        let remote_import = match &mutation {
+                            Mutation::RemoteSourceAttempt { .. } => true,
+                            Mutation::Import { source_id, .. } => healthy
+                                .repository()
+                                .source(*source_id)
+                                .is_some_and(|source| {
+                                    matches!(source.kind, nullgate_core::SourceKind::Remote { .. })
+                                }),
+                            _ => false,
+                        };
                         let result = if let Some(revision) = failed_revision {
                             Err(PolicyError::Unavailable { revision })
                         } else {
@@ -204,6 +231,13 @@ impl PolicyCoordinator {
                                         publisher.revision(),
                                         UnavailableReason::Stopped,
                                     );
+                                    if is_import {
+                                        options.metrics.import(
+                                            nullgate_core::metrics::ImportResult::Failed,
+                                            0,
+                                            0,
+                                        );
+                                    }
                                     let _ = reply.send(Err(PolicyError::OutcomeUnknown));
                                     break;
                                 }
@@ -243,6 +277,33 @@ impl PolicyCoordinator {
                                 }
                             }
                         };
+                        if is_import {
+                            use nullgate_core::metrics::ImportResult;
+                            let (outcome, accepted, malformed) = match &result {
+                                Ok(saved) if !fetch_failed => match &saved.import_report {
+                                    Some(report) => {
+                                        let accepted = report.accepted.len();
+                                        let malformed = report.malformed.len();
+                                        let outcome = if report.fatal_error.is_some()
+                                            || (accepted == 0 && (malformed > 0 || remote_import))
+                                        {
+                                            ImportResult::Rejected
+                                        } else if malformed > 0 {
+                                            ImportResult::Partial
+                                        } else {
+                                            ImportResult::Succeeded
+                                        };
+                                        (outcome, accepted, malformed)
+                                    }
+                                    None => (ImportResult::Succeeded, 0, 0),
+                                },
+                                Err(PolicyError::Storage(StorageError::NoValidRules)) => {
+                                    (ImportResult::Rejected, 0, 0)
+                                }
+                                _ => (ImportResult::Failed, 0, 0),
+                            };
+                            options.metrics.import(outcome, accepted, malformed);
+                        }
                         // Cancellation of the requester never skips activation/publication.
                         let _ = reply.send(result);
                     }

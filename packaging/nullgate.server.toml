@@ -1,0 +1,13 @@
+# Change only after restricting DNS/proxy access to trusted clients. No shared credentials.
+schema_version = 1
+data_dir = "/var/lib/nullgate"
+[dns]
+udp_listen = "127.0.0.1:5353"
+tcp_listen = "127.0.0.1:5353"
+upstreams = ["1.1.1.1:53", "9.9.9.9:53"]
+[http]
+listen = "127.0.0.1:8080"
+[web]
+listen = "127.0.0.1:8081"
+[auth]
+mode = "local"

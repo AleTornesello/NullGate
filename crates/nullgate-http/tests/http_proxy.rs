@@ -903,3 +903,63 @@ async fn truncated_upstream_body_is_reported_as_a_stream_error() {
     bounded(job).await.unwrap();
     proxy.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn metrics_count_policy_not_upstream_status_and_keep_connection_gauges_until_shutdown() {
+    use nullgate_core::metrics::{Metrics, MetricsSource};
+    let metrics = Metrics::default();
+    // An origin's 403 is an allowed policy decision, not a NullGate block.
+    let origin = Fixture::new(|_| async {
+        let mut response = Response::new(full("origin"));
+        *response.status_mut() = StatusCode::FORBIDDEN;
+        response
+    })
+    .await;
+    let mut policy = PolicyFixture::new(&origin.url("/ads"));
+    let proxy = HttpService::start(
+        HttpConfig {
+            listen: "127.0.0.1:0".parse().unwrap(),
+        },
+        policy.reader.clone(),
+        HttpOptions {
+            metrics: metrics.clone(),
+            ..HttpOptions::default()
+        },
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let mut client = Client::new(proxy.local_addr()).await;
+    assert_eq!(
+        client
+            .send(&origin.url("/ads?credential=never-retained"))
+            .await
+            .2,
+        Vec::<u8>::new()
+    );
+    assert_eq!(client.send(&origin.url("/news")).await.2, b"origin");
+    assert_eq!(metrics.snapshot().active_http_connections, 1);
+    let bad = raw(
+        proxy.local_addr(),
+        b"GET http://one.invalid/ HTTP/1.1\r\nHost: different.invalid\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(raw_status(&bad), 400);
+    policy
+        .publisher
+        .unavailable(policy.revision, UnavailableReason::CommittedNotActive);
+    assert_eq!(
+        client.send(&origin.url("/news")).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        (
+            metrics.snapshot().http.allowed,
+            metrics.snapshot().http.blocked
+        ),
+        (1, 1)
+    );
+    assert_eq!(metrics.snapshot().https.allowed, 0);
+    proxy.shutdown().await.unwrap();
+    assert_eq!(metrics.snapshot().active_http_connections, 0);
+}

@@ -199,7 +199,7 @@ Recommended starting stack: Tokio, Hickory DNS protocol support, Hyper, rustls/t
 
 ### 13. Implement selective HTTPS URL filtering — P1
 
-- [ ] Inspect only URL-listed hosts and reuse HTTP rule enforcement.
+- [x] Inspect only URL-listed hosts and reuse HTTP rule enforcement. See [Task 13 contracts and validation](../../implementation-decisions.md#task-13-selective-https-contracts).
 
 **Depends on:** Tasks 4, 6–7, and 12.
 **Files:** `crates/nullgate-http/src/{inspection,tls}.rs`; `crates/nullgate-http/tests/https_filtering.rs`.
@@ -211,7 +211,7 @@ Recommended starting stack: Tokio, Hickory DNS protocol support, Hyper, rustls/t
 
 ### 14. Add external identity-provider login — P2
 
-- [ ] Support the confirmed external authentication protocol and two-role mapping.
+- [x] Support the confirmed external authentication protocol and two-role mapping.
 
 **Depends on:** Tasks 1 and 9.
 **Files:** `crates/nullgate-web/src/oidc.rs` if OIDC is confirmed; `crates/nullgate-web/tests/external_login.rs`; configuration and administration documentation.
@@ -221,11 +221,11 @@ Recommended starting stack: Tokio, Hickory DNS protocol support, Hyper, rustls/t
 
 ### 15. Implement agreed metrics and dashboard — P2
 
-- [ ] Define metrics, instrument services, and show them in the web interface.
+- [x] Define metrics, instrument services, and show them in the web interface.
 
 **Depends on:** Task 1's metrics decision and Tasks 8–10, 13.
 **Files:** `crates/nullgate-core/src/metrics.rs`; proxy/orchestrator instrumentation; `crates/nullgate-web/src/metrics.rs`; `crates/nullgate-web/tests/metrics.rs`.
-**Proposed minimum:** Allowed/blocked DNS and HTTP requests, proxy health/restart counts, active connections, and import outcomes. These values, retention, and aggregation require confirmation; they are not already agreed requirements.
+**Confirmed scope (Task 1):** Process-lifetime aggregate allowed/blocked DNS and HTTP(S) decisions, proxy health/restart counts, active connections, and import outcomes. Reset on process restart; no individual request history. See implementation decisions for counting boundaries and passthrough visibility.
 
 **Acceptance:** Deterministic request sequences produce expected counts; both roles can view metrics; collection stays bounded and does not expose credentials or query parameters. Avoid unbounded per-domain/URL labels. Dashboard states distinguish unavailable services from zero traffic. Document retention/reset behavior.
 
@@ -233,7 +233,7 @@ Recommended starting stack: Tokio, Hickory DNS protocol support, Hyper, rustls/t
 
 ### 16. Verify the complete system and failure recovery — P2
 
-- [ ] Add release-blocking end-to-end tests and complete CI coverage.
+- [x] Add release-blocking end-to-end tests and complete CI coverage.
 
 **Depends on:** Tasks 5–15.
 **Files:** `crates/nullgate/tests/end_to_end.rs`; local fixtures under `crates/nullgate/tests/support/`; `.github/workflows/ci.yml`.
@@ -243,7 +243,7 @@ Recommended starting stack: Tokio, Hickory DNS protocol support, Hyper, rustls/t
 
 ### 17. Package and document a reproducible release — P2
 
-- [ ] Produce installable artifacts and verified operator instructions.
+- [x] Produce installable artifacts and verified operator instructions.
 
 **Depends on:** Task 16 and confirmed supported platforms.
 **Files:** release workflow under `.github/workflows/`; packaging files appropriate to selected targets; `README.md`; `docs/deployment.md`; `docs/administration.md`.

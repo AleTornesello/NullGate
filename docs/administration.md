@@ -24,7 +24,7 @@ The web interface supports three configurable modes:
 | External authentication | Sign-in through an external OpenID Connect provider, such as Keycloak. |
 | No authentication | Everyone accessing the interface receives Administrator permissions. |
 
-OpenID Connect authorization code with PKCE S256 is confirmed. Explicit trusted-claim mappings grant Administrator or Viewer; unmapped identities are denied. Provider issuer/client registration and exact claim names remain deployment configuration. Local login requires explicit first-run administrator provisioning with no default password; Argon2id, revocable opaque sessions and server-side CSRF/role checks are selected (T5). Exact account CLI and session lifetimes must be documented before Task 9.
+OpenID Connect authorization code with PKCE S256 is confirmed. Explicit trusted-claim mappings grant Administrator or Viewer; unmapped identities are denied. Provider issuer/client registration and exact claim names remain deployment configuration. Local login requires explicit first-run administrator provisioning with no default password; Argon2id, revocable opaque sessions and server-side CSRF/role checks are selected (T5). The provisioning command, bounded sessions and protected file requirements are documented below and in the deployment guide.
 
 ## Roles
 
@@ -34,18 +34,17 @@ OpenID Connect authorization code with PKCE S256 is confirmed. Explicit trusted-
 | View blocklists | Yes | Yes |
 | Create, edit, and import blocklists | Yes | No |
 | Trigger remote list updates | Yes | No |
-| Manage proxy settings and certificates | Yes | No |
-| Manage user access | Yes | No |
+| Download the public inspection CA | Yes | No |
 
-There are two roles only. There is no separate blocklist-editor role.
+There are two roles only. Startup/proxy settings are operator-managed configuration files, not web settings. Additional local account-management UI/CLI is not exposed; OIDC maps trusted provider roles explicitly.
 
 ## Certificates
 
-On first startup NullGate generates a local ECDSA P-256 CA and reuses that exact identity on every restart. This prepares certificate management only: HTTPS interception remains unavailable until Task13, and installing the certificate now does not enable it. No operating-system or browser trust store is changed automatically.
+On first startup NullGate generates a local ECDSA P-256 CA and reuses that exact identity on every restart. The executable now inspects only hosts derived from HTTPS URL rules. Clients accessing those hosts must explicitly trust the public NullGate CA; unlisted hosts retain end-to-end TLS. No operating-system or browser trust store is changed automatically.
 
 Administrators use **Download public CA** or `GET /api/v1/certificates/ca` to download `nullgate-inspection-ca.pem`. Authenticated Viewers and unauthenticated clients cannot download it; explicit no-authentication mode grants Administrator access as documented above. The download contains only the public certificate, with attachment/no-store headers. Web code receives no signer, private key or private-file operation. There is no private-key download or leaf-issuance endpoint.
 
-The CA is valid for3650days (ten365-day years). Host-specific leaf certificates last seven days, capped at CA expiry. A five-minute not-before allowance handles small clock differences. DNS names and IP addresses receive their correct SAN types; leaves are server-authentication certificates, with private keys held in memory only. CA expiry or a clock before the validity window prevents startup/issuance. Leaf caching/renewal and selective TLS inspection are Task13 work.
+The CA is valid for3650days (ten365-day years). Host-specific leaf certificates last seven days, capped at CA expiry. A five-minute not-before allowance handles small clock differences. DNS names and IP addresses receive their correct SAN types; leaves are server-authentication certificates, with private keys held in memory only. CA expiry or a clock before the validity window prevents startup/issuance. A new leaf is issued per inspected connection through bounded signing workers; there is no leaf cache.
 
 Private state resides at `<data_dir>/inspection-ca/material.bin`, a versioned bundle containing the certificate and PKCS8 private key. Keep the inspection-ca directory0700 and the material file0600, without symlinks or hard links, under a service-owned data directory that untrusted users cannot modify. Ancestors must be owned by the service or privileged system user, and must not be group/world-writable unless protected by sticky-directory semantics. Symlinks in any path component are rejected; ordinary safe `/tmp` fixture directories are supported. Storage uses pinned directory handles rather than resolving validated paths again. The fixed bundle is never a static/downloadable asset. Startup rejects malformed, truncated, mismatched, non-CA or expired material, unsafe permissions and incomplete creation. Errors identify the failure category without certificate/key contents. An interrupted first creation can leave an empty directory or partial bundle and requires the same explicit recovery procedure.
 
@@ -53,7 +52,7 @@ Private state resides at `<data_dir>/inspection-ca/material.bin`, a versioned bu
 
 **Rotation:** there is no automatic renewal or online rotation action. During a planned offline maintenance window, archive the previous identity securely, deliberately move its entire inspection-ca directory out of the data location, and restart to generate a new identity. Distribute and verify the new public certificate on managed clients, then remove the old trust according to the deployment's rollout plan. Never retain old client trust after a suspected key compromise. Offline deletion/replacement is an operator action; the application never silently performs it.
 
-**Deferred decisions:** expiry warnings, managed/encrypted backup tooling, an assisted rotation workflow and the Task13 leaf-cache/renewal policy remain to be designed. The confirmed first-release policy is offline recovery/rotation, with no background root replacement. No trust-store modification is part of Task12 or its tests.
+**Deferred decisions:** expiry warnings, managed/encrypted backup tooling, an assisted rotation workflow and a possible future leaf-cache/renewal policy remain to be designed. The confirmed first-release policy is offline recovery/rotation, with no background root replacement. No automatic trust-store modification is performed by the application or its tests.
 
 ## Metrics
 
@@ -61,28 +60,12 @@ The confirmed first dashboard shows aggregate allowed/blocked DNS and HTTP(S) co
 
 ## Save outcomes
 
-The future management API returns a policy revision and accepted/duplicate/malformed diagnostics. Concurrent stale edits return a conflict. Validation or storage failure before commit preserves the old policy. If durable commit succeeds but activation fails, the response explicitly identifies the committed revision as `committed_not_active`; affected traffic remains unavailable until recovery. A successful rule save means the complete revision is active, with in-flight request boundaries described in [implementation decisions](implementation-decisions.md#configuration-persistence-and-publication).
+The management API returns a policy revision and accepted/duplicate/malformed diagnostics. Concurrent stale edits return a conflict. Validation or storage failure before commit preserves the old policy. If durable commit succeeds but activation fails, the response explicitly identifies the committed revision as `committed_not_active`; affected traffic remains unavailable until recovery. A successful rule save means the complete revision is active, with in-flight request boundaries described in [implementation decisions](implementation-decisions.md#configuration-persistence-and-publication).
 
 
-## Implemented repository behavior (Task 3)
+## Local authentication
 
-Core stores named lists and independent Manual/File/Remote source memberships; there is no management UI yet. Manual/file imports add rules. Explicit replacement is separate from import; source/list removal and source clearing are explicit commands. Remote import replaces only its own memberships when valid rules are present. An empty/all-invalid response or recorded fetch failure preserves previous memberships while storing the attempt outcome and advancing the durable revision.
-
-Each source retains its latest import counts, last attempt/success timestamps and up to 1000 safe malformed-line diagnostics. The immediate commit result includes the complete parser report. Batch accepted counts differ from membership additions when importing rules already present in that source. Cross-source duplicates remain independent, so removing a remote source cannot remove a manual rule.
-
-The repository requires the caller’s expected revision for every edit. Validation, capacity, busy, read-only and transactional write failures leave prior state usable; no partial valid subset is committed if the database write itself fails. Task 4 now implements library-level publication; HTTP outcome mapping remains Tasks 10/11.
-
-
-## Policy save coordination (Task 4)
-
-The orchestrator now implements the core management interface as a bounded, serialized queue. Successful saves return the published snapshot and full parser diagnostics; malformed lines do not prevent valid entries from becoming active. Queue-full and already-stopped requests are rejected before acceptance. Cancelling a request after acceptance does not cancel its durable update/publication; reconcile its revision before retrying.
-
-Pre-commit storage failure retains the active policy. Post-commit activation error, panic or deadline expiry reports the committed revision as inactive, blocks new policy admissions and refuses further edits until explicit recovery succeeds. These are implemented library outcomes; HTTP routes and connection invalidation consumers remain later tasks.
-
-
-## Local authentication library (Task 9)
-
-Local username/password authentication is the configuration default. Provision the first Administrator explicitly before web integration; there is no shared default password or remote bootstrap endpoint. Create a regular password file with owner-only permissions (0600) in a trusted directory, containing your unique password and an optional final newline, then run:
+Local username/password authentication is the configuration default. Provision the first Administrator explicitly before first login; there is no shared default password or remote bootstrap endpoint. Create a regular password file with owner-only permissions (0600) in a trusted directory, containing your unique password and an optional final newline, then run:
 
 ```sh
 cargo run --locked --bin nullgate -- provision-admin --config config/nullgate.example.toml --username your-admin-name --password-file /secure/path/nullgate-password
@@ -92,7 +75,7 @@ The command reads and hashes the password without placing it in process argument
 
 Usernames are case-insensitive ASCII, 1–64 letters/digits/dot/underscore/hyphen. Passwords contain 12–1024 UTF-8 bytes, without trimming. Argon2id uses a distinct random salt per password. Sessions are opaque, stored only as SHA256 digests, rotate on login, expire after eight hours and are revoked on logout. There is no sliding idle expiry. Roles and disabled-account state are checked for every request; account creation rechecks Administrator session authority in its write transaction. Authentication changes do not advance the filtering-policy revision.
 
-`nullgate-web::WebState` injects authentication, explicit transport/origin policy and the core management interface. `router(state, management_routes)` protects all supplied routes and fallback handlers, with authenticated `Identity` in request extensions. Viewers may read but cannot mutate through direct requests. Explicit no-authentication mode grants Administrator permissions while retaining trusted Host/Origin and CSRF checks. OIDC remains unavailable until Task 14; proxy-client authentication is separate.
+`nullgate-web::WebState` injects authentication, explicit transport/origin policy and the core management interface. `router(state, management_routes)` protects all supplied routes and fallback handlers, with authenticated `Identity` in request extensions. Viewers may read but cannot mutate through direct requests. Explicit no-authentication mode grants Administrator permissions while retaining trusted Host/Origin and CSRF checks. OIDC is enabled by the explicit provider configuration below; proxy-client authentication remains separate.
 
 The library provides `/api/v1/auth/csrf`, `/login`, `/logout` and `/me` beneath the same `/api/v1/auth` prefix. Obtain the JSON CSRF proof first; send its cookie and `X-CSRF-Token` plus the configured Origin for login and browser mutations. Login returns a new proof and host-only HttpOnly session cookie; logout clears and revokes it. Authentication responses are `Cache-Control: no-store`. There is no permissive CORS policy.
 
@@ -129,3 +112,56 @@ Administrators can add a public HTTP(S) text URL to a list, then explicitly refr
 Fetches use a ten-second total deadline, a four-MiB UTF-8 body limit, at most three redirects, and only complete HTTP 200 responses with identity encoding. HTTPS cannot redirect to HTTP. Credentials, fragments and non-HTTP(S) URLs are rejected. Every redirect resolves and checks all destination addresses, then pins those addresses for the connection while keeping hostname and TLS certificate verification. Production permits public unicast destinations and rejects private, loopback, link-local, shared, reserved, documentation and IP transition ranges; there is no private-network exception setting. Ambient proxies, cookies, automatic retries and decompression are disabled. Tests inject an explicit local address-and-port policy and test certificates.
 
 The API exposes `POST /api/v1/lists/{id}/remote` with `expected_revision` and `url`, and `POST /api/v1/sources/{id}/refresh` with `expected_revision`. Both require Administrator permission and the normal CSRF proof. A failed fetch returns 502; no valid rules returns 422. Their error envelope contains the recorded revision. A 409 conflict does not record the stale attempt. Source deletion explicitly removes that source's memberships; remote entries cannot be edited individually.
+
+
+## Selective HTTPS filtering
+
+HTTPS URL rules select their exact host for inspection, independently of path/port. An HTTP-only URL rule does not select HTTPS inspection. Domain rules still block CONNECT directly; a URL-only rule never blocks its entire host in DNS. Configure clients as explicit HTTP proxy clients and distribute the public CA only to managed clients. Missing CA trust produces a TLS certificate failure. Unlisted hosts keep the origin certificate and opaque end-to-end encryption.
+
+Inspected traffic supports TLS1.2/1.3 and HTTP/1.1. Only `http/1.1` is advertised through ALPN; clients without ALPN can use HTTP/1.1. HTTP2-only negotiation fails, HTTP/1.0 receives505, and HTTP3/QUIC, nested CONNECT and WebSocket/Upgrade are unsupported on inspected connections. Opaque TCP passthrough can carry end-to-end HTTP2 and WebSocket, but does not transport native QUIC/HTTP3. DNS SNI must match the normalized CONNECT hostname; DNS clients omitting SNI are rejected. IP CONNECT clients must omit SNI. The inner Host/absolute URI must match the CONNECT host and port; authority changes receive an empty421 (or400 for malformed/conflicting headers) and close. There is no fallback to unchecked passthrough.
+
+Every inner request applies the shared rule engine. Exact `/ads` blocks its query variants but permits `/ads/` and `/news`; `/ads/*` also blocks `/ads`, `/ads/` and descendants. Query parameters remain on forwarded permitted requests. Blocked requests return empty403 before connecting upstream. Permitted requests use verified upstream chains/hostnames with the server's normal system roots, loaded at application startup; restart the application to reload them. Standard `SSL_CERT_FILE`/`SSL_CERT_DIR` root selection may be configured for the process; tests set these only on isolated fixture children. No insecure verifier, ambient proxy or automatic downgrade is used. Upstream certificate failures return502, connection/TLS deadline failures504. CONNECT200 only acknowledges admission; the inner request must still succeed.
+
+A request captures a policy snapshot after validated headers. Path-rule edits affect the next request on the same inspected keep-alive connection; an already admitted response may finish. New domain blocks or changes in inspection membership close affected existing tunnels/inspected connections and join nested upstream work before a successful save acknowledgment. Sent bytes cannot be recalled. Removing the final HTTPS URL rule closes inspection so the next connection presents the origin certificate again.
+
+Client and upstream handshakes have bounded connect deadlines; existing HTTP header/admission/streaming limits apply inside TLS. Issuance is bounded to four jobs, with a fresh certificate per inspected connection and no disk leaf keys. Upstream connections are per request with resumption disabled for fresh validation. HTTP2/3 support, pooling, leaf caching and additional expiry/operational tooling remain future work.
+
+
+## External login (OpenID Connect / Keycloak)
+
+Use [the non-secret OIDC example](../config/nullgate.oidc.example.toml): set `[auth] mode="oidc"` and a complete `[oidc]` block. Local/no-auth modes must omit that block. `web.public_origin` is explicit, and `redirect_uri` must be exactly its `/api/v1/auth/oidc/callback` URL. Use dedicated HTTPS or explicit loopback TLS offload in production. Issuer, authorization/token/JWKS/logout endpoints must use the same provider origin; HTTPS is required except local loopback HTTP. Different-origin endpoint layouts and ID-token algorithms other than RS256 are not currently supported. There is no permissive redirect/TLS/proxy fallback.
+
+For a confidential client, `client_secret_file` references an existing service-owned regular file, at most 4096 bytes, with owner-only permissions (normally 0600). Ancestors must be protected, links/special files are rejected, and one final LF/CRLF is removed. Resolve relative paths against the configuration directory. Keep actual secret contents outside source control/TOML/logs, and protect backups. Omit this field for a public client configured to require PKCE S256. Do not send production secrets through chat. Provider metadata is fetched lazily, so an IdP outage does not stop the filtering proxies or grant password/no-auth fallback.
+
+The signed ID token alone supplies identity/roles. Set `role_claim` to a JSON Pointer such as `/realm_access/roles` or `/resource_access/nullgate/roles`. The value must be a string or an array of strings. Configure exact, case-sensitive, disjoint `administrator_values` and `viewer_values`; Administrator wins only when an explicitly mapped Administrator value exists. Never select a self-editable profile field as authorization authority. Missing/unmapped claims are denied, not defaulted to Administrator or Viewer. User identity is exact `(issuer,sub)`; matching email/display names never merge external and local accounts.
+
+Sessions use existing opaque, hashed, revocable cookies and server-side authorization/CSRF checks. They expire at the earlier of ID-token expiry or eight hours. No refresh/access/ID tokens are retained after login; there is no background renewal. Provider role changes are observed on re-login, not through polling: a verified changed role revokes older sessions; an unmapped verified re-login revokes prior credentials. Configuration changes invalidate sessions bound to the old issuer/client/role-policy fingerprint. Disabled accounts stay disabled. Local and external session types cannot authenticate the other mode, and changing back to local mode permits explicit first Administrator provisioning when only external accounts exist.
+
+Sign-in starts with a CSRF-protected POST to `/api/v1/auth/oidc/start`. The one-shot callback at `/api/v1/auth/oidc/callback` requires the ten-minute state/browser binding, nonce and S256 verification. Signature, issuer, audience, azp, expiry, issued/not-before times and access-token hash (when present) are validated. In-progress redirects are memory-only and do not survive application restart. Provider cancellation consumes its authorization attempt. Callback URLs/codes/provider errors are not logged or echoed in error messages.
+
+**Logout:** the CSRF-protected `/api/v1/auth/logout` first durably revokes the presented NullGate session and clears its cookies/unconsumed browser authorization attempts, then returns a validated provider-logout redirect. The browser follows `end_session_endpoint?client_id=...&post_logout_redirect_uri=.../login`. No stored ID-token hint is needed, so Keycloak may ask the user to confirm logout. A failed provider request never restores local authentication; if discovery is unavailable, the login page explains that provider SSO may still be active. A callback already admitted before logout is a separate login attempt; logout is not a global cancellation of concurrent logins. This release has RP-initiated logout, not a back/front-channel logout receiver. Other existing NullGate sessions retain their own bounded expiry/revocation semantics. Provider logout can end SSO for other applications according to provider behavior.
+
+### Keycloak client setup
+
+1. Create an OpenID Connect client with client ID matching `client_id`. Enable **Standard flow**; disable implicit flow, direct-access grants and service accounts. Require **S256** PKCE. Enable client authentication for a confidential client and put its secret in the protected file, or use a public client without a secret file.
+2. Register the exact callback URL, with no wildcard. Register `<web.public_origin>/login` as the valid post-logout redirect URI (`post.logout.redirect.uris`). Set the public web origin explicitly. Keycloak's discovery issuer must exactly match `issuer`, for example `https://sso.example/realms/nullgate`.
+3. Create dedicated realm roles such as `nullgate-admin` and `nullgate-viewer`, assigning them only to intended users. Add an **ID-token** realm-role protocol mapper: `oidc-usermodel-realm-role-mapper`, `claim.name=realm_access.roles`, `multivalued=true`, `jsonType.label=String`, `id.token.claim=true`. The built-in access-token roles alone are insufficient; NullGate does not authorize from access tokens or userinfo. For client roles, use the equivalent client-role mapper and configure the matching JSON Pointer.
+4. Configure the explicit NullGate role values and test Administrator, Viewer and an unmapped user. The first login does not create an Administrator unless its verified role maps explicitly. Keep a documented operator recovery procedure for IdP/configuration outages; there is no automatic fallback to local passwords.
+
+`scripts/keycloak_smoke.py` tests a representative Keycloak 26.4.5 confidential client, Standard flow/S256, the ID-token realm-role mapper, exact callback/post-logout registration, Administrator/Viewer/unmapped behavior, direct Viewer write rejection, provider logout confirmation and credential-free logs. It generates all test credentials into private temporary files, runs a loopback-only temporary container on `localhost` with NullGate on `127.0.0.1` to exercise cross-site provider returns, and removes it afterward. Its clients/realm are fixtures, not deployment credentials. Local signed-provider tests additionally cover invalid callbacks/tokens, expiry, role/context isolation and failure handling. No machine trust-store change or reusable environment publication is involved.
+
+## Aggregate traffic dashboard
+
+Open **Dashboard** in the navigation, or `/dashboard`. Administrators and Viewers have identical read access; unauthenticated users must sign in. `GET /api/v1/metrics` returns the same aggregate snapshot as JSON. There is no reset or write endpoint. Use **Refresh metrics** to update the page; this release does not retain chart samples or poll historical traffic.
+
+All counters reset when the NullGate process restarts, including when durable lists and accounts are restored. Supervised proxy restarts preserve these counters. Uptime starts during application initialization. Storage is bounded to fixed numeric counters and current supervisor health, with saturating totals; no domain/URL/user labels, credentials, query parameters or individual request history are collected.
+
+Allowed/blocked counts describe policy decisions, not successful upstream responses. A permitted request whose upstream times out or returns 403 still counts as allowed. Invalid requests and policy-unavailable errors rejected before evaluation count as neither. DNS counts each evaluated query once, regardless of upstream retries. HTTP and inspected HTTPS messages are separate; each inspected keep-alive request is counted independently. CONNECT counts admission decisions separately, including connections whose later connect/TLS handshake fails. Encrypted messages inside passthrough tunnels are invisible and are not included in inspected HTTPS totals.
+
+Active connection gauges count admitted DNS client TCP and HTTP/CONNECT client TCP sockets, including idle keep-alive and upgraded connections; they exclude UDP datagrams, upstream sockets and the web management listener. Restart counts are supervisor replacement attempts. Health comes from the live supervisor and policy subscription, with explicit starting/backoff/stopping/stopped/failed and policy-unavailable states. Zero counters alone never establish readiness; cumulative counters remain available during recovery. Missing telemetry returns 503 `metrics_unavailable`; missing health is displayed as unavailable rather than ready.
+
+Import outcomes count completed policy-worker commands in the current runtime, not the current number of stored lists/reports. Mixed valid/malformed input is partially valid; all-malformed input and remote empty/comment-only refreshes are rejected. Explicit empty local source clearing succeeds. Recorded download failures, conflicts and failed writes/activation count as failed. Requests rejected before reaching the worker are excluded. Accepted and malformed line totals sum returned parser reports; failed operations without a report contribute no line totals, and duplicate lines do not add accepted lines. Durable prior import reports remain visible on source pages but are not replayed into dashboard counters.
+
+## Release operations
+
+Follow the [deployment guide](deployment.md) for package/user installation, service ownership, first provisioning, upgrades, full offline backups, trust installation/removal and recovery. Startup settings require a restart; web edits publish live policy. Runtime metrics reset on process restart, while lists, accounts and CA identity persist.

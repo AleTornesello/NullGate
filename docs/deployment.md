@@ -1,93 +1,143 @@
-# Deployment
+# Installation and deployment
 
-## Supported deployment models
+## Release scope
 
-NullGate is intended to run either on the browser's own machine or on a dedicated server serving multiple devices. The confirmed first release target is Linux x86_64 (`x86_64-unknown-linux-gnu`). The supported distro/glibc baseline and packaging remain prerequisites for Task 17; other platforms are not promised.
+The first release targets **Linux x86_64 GNU**, with a Debian 12/glibc 2.36 baseline. Other CPU architectures, musl, macOS and Windows artifacts are not provided. The release build uses pinned compiler/packager container digests, Rust 1.99.1, Cargo.lock, a fixed SOURCE_DATE_EPOCH, portable x86-64 code generation and deterministic tar/deb metadata. Panic unwinding remains enabled so supervision can observe worker failures.
 
-All devices use the same blocking rules.
+Candidate files are `nullgate-0.1.0-x86_64-unknown-linux-gnu.tar.gz`, `nullgate_0.1.0_amd64.deb`, `BUILD-MANIFEST.json` and `SHA256SUMS`. The MIT license and dependency notices are included. No account database, passwords, private keys or pre-generated inspection CA are packaged. Checksums detect changed bytes; release signing is not implemented. Local candidates identify dirty source explicitly; the preparation workflow requires a clean checkout. Nothing in that workflow creates a GitHub release or pushes a tag.
 
-## Setup outline
+## Local user installation
 
-The current runtime can be started with `cargo run --locked --bin nullgate -- --config config/nullgate.example.toml`. Copy/edit the example for the intended listen addresses, upstream DNS and data directory. Relative paths resolve against that file. Wait for `runtime ready`, which lists the actual bound DNS UDP/TCP and HTTP addresses; `runtime health` reports withdrawal/restarts. SIGINT/SIGTERM cancel and join proxy work and close active tunnels. Initial startup failures exit unsuccessfully; later proxy failures retry at 1–30 seconds, resetting after 60 healthy seconds.
+These commands are for Bash as your normal user. Install Python 3 for the user installer; the runtime binary itself does not require Python. Obtain the candidate files and checksums through your trusted distribution channel, then:
 
-Local authentication and blocklist administration are now available at the logged web origin. Provision the first Administrator explicitly, then edit/import through the web interface. Direct HTTPS uses configured certificate/key files; TLS offload requires explicit loopback-only configuration. Remote imports, CA issuance and HTTPS URL inspection remain later work. New databases start with no accounts or rules. The rest of this setup outline describes the intended completed product, not current administration/inspection capabilities. Packaging remains Task 17. See [implementation decisions](implementation-decisions.md).
+```bash
+sha256sum -c SHA256SUMS
+mkdir -p "$HOME/.cache/nullgate-install"
+tar -xzf nullgate-0.1.0-x86_64-unknown-linux-gnu.tar.gz -C "$HOME/.cache/nullgate-install"
+python3 "$HOME/.cache/nullgate-install/nullgate-0.1.0-x86_64-unknown-linux-gnu/install-user.py"
+"$HOME/.local/bin/nullgate" --version
+```
 
-1. Install and start NullGate on the selected machine.
-2. Configure the DNS and HTTP proxy listen addresses and ports.
-3. Configure upstream DNS servers for permitted DNS queries.
-4. Configure web authentication; username/password is the default.
-5. Create blocklists in the web interface and add or import rules.
-6. Point client DNS settings to NullGate's DNS proxy.
-7. Configure the browser or operating system to use NullGate's HTTP proxy.
-8. Download the public CA certificate from the web interface as an administrator and install it as trusted on each client requiring HTTPS URL filtering.
+The installer atomically replaces `$HOME/.local/bin/nullgate`, creates `$HOME/.config/nullgate/nullgate.toml` only if absent, and uses `$HOME/.local/share/nullgate` for state. Configuration/data directories must be owned by you with mode0700; the configuration is0600. Existing configuration and state are preserved on reinstall. Custom `--prefix`, `--config-dir`, and `--data-dir` paths are supported by the installer. Do not run this installer with sudo.
 
-For a local installation, client settings point to the local NullGate instance. For a dedicated server, client settings point to its reachable network address. Exact configuration steps depend on the browser and operating system and remain to be documented.
+Provision the first Administrator before starting; there are no shared default credentials. Choose a unique 12–1024-byte password. The password file must be a regular0600 file under a protected directory:
 
-## HTTPS behavior
+```bash
+umask 077
+read -r -s -p 'Administrator password: ' nullgate_admin_password
+printf '\n'
+printf '%s\n' "$nullgate_admin_password" > "$HOME/.config/nullgate/admin-password"
+unset nullgate_admin_password
+"$HOME/.local/bin/nullgate" provision-admin --config "$HOME/.config/nullgate/nullgate.toml" --username admin --password-file "$HOME/.config/nullgate/admin-password"
+rm -- "$HOME/.config/nullgate/admin-password"
+"$HOME/.local/bin/nullgate" --config "$HOME/.config/nullgate/nullgate.toml"
+```
 
-Current runtime: HTTPS is opaque CONNECT passthrough. Domain rules can reject CONNECT, but HTTPS URL rules do not block their hosts or encrypted paths. Successful CONNECT responses report `NullGate-HTTPS-URL-Filtering: unavailable`; clients continue verifying the upstream certificate end-to-end. The following inspection behavior belongs to Task 13.
+The stock local listeners are DNS UDP/TCP `127.0.0.1:5353`, HTTP/CONNECT `127.0.0.1:8080`, and administration `http://127.0.0.1:8081`. Configure ordered DNS upstreams in the file before startup. Relative paths in configuration resolve against the configuration file, not the shell directory. Wait for `runtime ready` and probe the web login before configuring clients. Ctrl-C/SIGTERM joins active work and closes tunnels; startup failures exit unsuccessfully, while later proxy failures retry with bounded1–30-second backoff.
 
-NullGate inspects HTTPS only for exact hosts derived from active HTTPS URL rules. HTTP-only URL rules do not select inspection. Other HTTPS traffic passes through without decryption. Trusting the generated CA allows NullGate to inspect traffic for selected domains; distribute only the public certificate to clients.
+## Dedicated Debian server
 
-Applications with certificate pinning or a separate trust store may require additional configuration or may be incompatible with inspection. Missing client trust causes TLS failure. Invalid upstream chains or hostnames are rejected with no insecure passthrough fallback for an inspection target.
+Verify the same checksum file, then install the package and its declared dependencies:
 
-Domain-only filtering does not require HTTPS path inspection.
+```bash
+sha256sum -c SHA256SUMS
+sudo apt-get install ./nullgate_0.1.0_amd64.deb
+```
 
-## Operational behavior
+The package creates the `nullgate` service identity, installs `/usr/bin/nullgate`, preserves `/etc/nullgate/nullgate.toml` as a conffile, creates `/var/lib/nullgate`0700 and installs `nullgate.service`. It does **not** start the service. Defaults are loopback-only until you configure trusted access. The configuration is root:nullgate0640 in root:nullgate0750 `/etc/nullgate`; state belongs to nullgate. Private TLS/OIDC key files must meet the owner-only rules in [administration](administration.md).
 
-- The orchestrator starts and stops both proxies and restarts failed proxies.
-- Rule changes take effect immediately after saving.
-- Remote blocklist updates require an explicit user action.
-- Blocked DNS queries receive NXDOMAIN; blocked HTTP/HTTPS requests receive an empty 403 response.
+For normal client DNS settings, bind DNS UDP and TCP to your trusted server LAN address on port53; most OS DNS settings cannot specify5353. The unit grants only CAP_NET_BIND_SERVICE for privileged ports. Bind the HTTP proxy to that LAN address on8080. Restrict both services to approved LAN/VPN clients using network policy/firewall rules before starting: proxy-client authentication is not implemented, and web login does not authenticate proxy clients.
 
-Clients must actually route their relevant DNS and HTTP traffic through NullGate for its rules to apply. Browser/OS settings are the intended integration; transparent interception is not specified.
+For remote administration configure trusted HTTPS, for example:
 
-## Details still to define
+```toml
+[web]
+listen = "0.0.0.0:8443"
+public_origin = "https://nullgate.example:8443"
+[web.tls]
+certificate_file = "/etc/nullgate/web-cert.pem"
+private_key_file = "/etc/nullgate/web-key.pem"
+```
 
-- Installation artifacts and Linux x86_64 distro/glibc baseline.
-- Release build and packaging workflow (scaffold build/check commands are in the README).
-- Exact listen defaults and persistent data paths; TOML startup config and SQLite are selected.
-- HTTPS certificate/proxy configuration: public/shared administration requires HTTPS; cleartext administration is loopback-only (T5).
-- Exact first-run provisioning CLI and OIDC provider registration/claim configuration.
-- Operator-facing DNS configuration: initial UDP/TCP, bounded timeout/failover and no caching are selected (T2).
-- Proxy authentication, if any; web interface authentication does not define client proxy authentication.
-- CA storage, backup, rotation, and recovery.
-- Operator-facing settings and guidance for tracing, bounds, health and restart behavior selected in implementation decisions. Metrics are process-lifetime aggregates with no request history.
-- Handling of client DNS caches, DNS-over-HTTPS, HTTP/3, and software bypassing configured proxies.
+Use a certificate valid for that management hostname, issued by a CA trusted by administrators. Install its private key as nullgate:nullgate0600; the public certificate can be0644. This management certificate is separate from the inspection CA. Never expose cleartext management on a non-loopback listener; startup rejects it. An existing trusted reverse proxy can instead terminate HTTPS in front of an explicitly configured loopback-only backend (`web.tls_terminated_by_proxy=true`). Forwarded headers alone are not trusted.
 
-## Validation once an implementation exists
+Provision as the service user so the database and private state have the correct owner:
 
-Verify a permitted request, an exact domain block, a wildcard subdomain block, an exact HTTPS URL block, and a wildcard URL block. Confirm that queries are ignored, sibling URLs remain permitted, and unlisted HTTPS domains are not inspected. Also verify malformed-rule reporting, immediate rule updates, upstream DNS forwarding, access restrictions for Viewers, and failed-proxy restarts.
+```bash
+sudo install -d -o nullgate -g nullgate -m 0700 /run/nullgate-provision
+read -r -s -p 'Administrator password: ' nullgate_admin_password
+printf '\n'
+printf '%s\n' "$nullgate_admin_password" | sudo -u nullgate tee /run/nullgate-provision/password >/dev/null
+unset nullgate_admin_password
+sudo chmod 0600 /run/nullgate-provision/password
+sudo -u nullgate /usr/bin/nullgate provision-admin --config /etc/nullgate/nullgate.toml --username admin --password-file /run/nullgate-provision/password
+sudo rm -- /run/nullgate-provision/password
+sudo systemctl enable --now nullgate.service
+sudo systemctl status nullgate.service
+sudo journalctl -u nullgate.service --no-pager -n 30
+```
 
-These are acceptance scenarios for future tests; they have not been executed against an implementation.
+Readiness follows successful binding of DNS, proxy and web listeners with active policy. A running process alone is not a readiness probe. `/dashboard` and `/api/v1/metrics` show health after authentication. The unit keeps the service unprivileged, constrains writes to `/var/lib/nullgate`, and supplies the low-port capability. Custom data locations require corresponding systemd write-path changes.
 
+## Configure clients and verify filtering
 
-## Implemented configuration and storage APIs (Task 3)
+Point the client's DNS resolver to the server's DNS listener and configure **both HTTP and HTTPS** to use the HTTP proxy host/port. HTTPS uses CONNECT through the same HTTP proxy; this listener is not a SOCKS proxy or an HTTPS-wrapped proxy. Browser/OS proxy exceptions must not exempt the sites you want filtered.
 
-[config/nullgate.example.toml](../config/nullgate.example.toml) is a non-secret, loopback-only example with unprivileged ports. Its required startup settings include listener socket addresses, ordered DNS upstreams and a data directory. Local web authentication is the default; `oidc` and `none` select future authentication behavior only. Schema version and unknown fields are validated, and errors identify a field path/line without echoing its value.
+The local unprivileged5353 example is suitable for explicit probes such as `dig @127.0.0.1 -p 5353 example.com`. For system DNS use port53 through the packaged service, or configure an existing local resolver to forward to5353. Merely setting a nameserver to127.0.0.1 does not select5353.
 
-Relative data and TLS-file references resolve against the configuration file’s directory. The database path is `<data_dir>/nullgate.sqlite3`. DNS attempt/total deadlines default to 2000/5000ms. Cleartext administration binds loopback only; non-loopback web addresses require paired TLS file references. This validation does not read TLS keys or start a TLS service. Startup setting changes require rereading the configuration/restarting once Task 8 integrates startup.
+Create a mixed list through the authenticated web interface. Include an exact domain, `*.tracking.example`, an HTTP URL and an HTTPS URL such as `https://site.example/ads/*`. Test an allowed request, NXDOMAIN for blocked names, empty403 for blocked HTTP/HTTPS paths, query variants, and permitted sibling paths. Remote refreshes are manual and preserve other provenance. All devices share the same rules. Use known local fixtures for automated tests; do not use production traffic as a destructive test.
 
-The core repository uses SQLite WAL with FULL synchronous mode and transactional schema version 1. Reopening validates stored rules and provenance; unsupported schemas/corruption fail instead of resetting data. Newly created directories/files are private on Unix (0700/0600). Existing directory permissions remain the operator’s responsibility. Do not copy only an active WAL database file as a backup; release backup/restore procedures remain part of Task 17.
+For a per-command client trust store:
 
-Repository methods are blocking. Task 4 now runs them on a bounded storage worker and publishes the returned complete compiled policy before acknowledging saves. A storage commit by itself does not mean running proxies have updated.
+```bash
+curl --proxy http://127.0.0.1:8080 --cacert nullgate-inspection-ca.pem https://site.example/sibling
+```
 
+Download the inspection CA as Administrator over the trusted management connection. Verify its SHA256 fingerprint against the operator's trusted copy before distributing it. Only the public PEM goes to clients; never copy `<data_dir>/inspection-ca/material.bin` to a client.
 
-## Implemented policy coordination API (Task 4)
+On Debian clients, system-wide trust and removal use:
 
-`PolicyCoordinator::open` opens/loads the repository on its dedicated blocking task. Applications choose the queue bound (normally `limits.storage_queue_capacity`) and an activation deadline (default 5s). The binary does not invoke this API yet. Runtime startup remains Task 8.
+```bash
+sudo install -m 0644 nullgate-inspection-ca.pem /usr/local/share/ca-certificates/nullgate-inspection.crt
+sudo update-ca-certificates
+# To remove that trust later:
+sudo rm -- /usr/local/share/ca-certificates/nullgate-inspection.crt
+sudo update-ca-certificates --fresh
+```
 
-A successful library save means the durable revision is published to all existing read handles. Readers capture one immutable snapshot per request; watch notifications can coalesce, so the latest complete revision is authoritative. A retained old snapshot is only for work admitted before a change. Failed validation/writes preserve the active snapshot. Expected-revision conflicts are explicit; the coordinator never automatically retries an edit.
+Restart affected clients to reload trust and close existing sessions. Per-application stores (Firefox/NSS, Java, Python certifi, containers and mobile applications) may need separate import/removal; an OS trust update does not establish that those applications trust the CA. Certificate-pinned applications can reject inspection despite correct CA installation. Do not disable their TLS verification: remove the relevant inspection selection if permitted by your policy, or treat that application as incompatible. Unlisted hosts preserve the original end-to-end TLS certificate.
 
-Future connection managers must register idempotent activation hooks and acknowledge required invalidations. While activation is pending or failed after commit, new policy reads are unavailable; a failure reports `CommittedNotActive` with its durable revision. Explicit recovery reloads durable state and repeats activation before publishing. Worker loss makes reads unavailable; an accepted request whose reply is lost has `OutcomeUnknown` and must be reconciled before retry. Repository writes outside the coordinator are unsupported while it owns the policy.
+## Enforcement boundaries
 
-Graceful shutdown drains commands ahead of its stop marker, makes read handles unavailable and joins the worker. Real proxy responses to unavailable policy and tunnel invalidation behavior remain their protocol/lifecycle tasks; Task 4 starts no listeners.
+NullGate filters traffic actually sent to its configured DNS and explicit proxy listeners. It is not a transparent interceptor or a network firewall. Applications ignoring proxy settings, direct IP connections, alternate resolvers, VPNs, DoH/DoT, and native HTTP3/QUIC can bypass these listeners. Enforce routing/resolver restrictions elsewhere if required; the application does not install such rules.
 
+DNS caches in browsers, OS resolvers and other forwarders can delay new DNS results; NullGate itself has no DNS cache. Flush the relevant client cache (for example `resolvectl flush-caches` with systemd-resolved) and retry a new connection. DNS changes do not recall previously returned addresses. Proxy policy is reevaluated at the documented request boundaries; already admitted bytes cannot be recalled.
 
-## Implemented DNS library service (Task 5)
+Inspected traffic supports TLS1.2/1.3 and HTTP/1.1, with strict CONNECT/SNI/Host authority binding and verified upstream certificates. HTTP2-only inspection, HTTP3/QUIC, nested CONNECT and WebSocket/Upgrade inspection are unsupported. Opaque passthrough can carry end-to-end HTTP2/WebSocket over TCP, without observing their request paths. Managed clients may need QUIC/secure-DNS policy changes; no universal fallback or transparent enforcement is promised.
 
-`DnsService::start` accepts DNS configuration, a read-only policy subscription, resource limits and a cancellation token. Both UDP and TCP binds must succeed before readiness reports their actual bound addresses. Core lifecycle monitors expose Ready/Failed/Stopped to future supervision; per-query malformed packets and upstream failures do not tear down healthy listeners.
+## Upgrades, backups and recovery
 
-The service returns NXDOMAIN for exact/wildcard domain blocks and forwards permitted queries over UDP/TCP to the configured upstreams. URL-only rules never block DNS. Each new question, including questions on a reused TCP connection, captures current policy; unavailable policy returns SERVFAIL. In-flight questions may finish under their admitted revision. Upstream timeouts/transport failures try subsequent servers within configured deadlines; truncated UDP retries TCP at the same server. There is no caching.
+Stop the application first and confirm it exited before copying state. Back up the **entire** state directory, configuration, referenced management/OIDC secrets and the previous verified package. Keep backup storage private and encrypted where appropriate: CA state includes an unencrypted signing key. Do not copy only a live SQLite main file and omit its WAL.
 
-UDP replies respect the client’s 512-byte/EDNS size with a 1232-byte cap. Larger answers return a valid truncated reply for TCP retry. TCP framing and idle I/O are bounded; cancellation joins active tasks and releases both listeners. The service’s default request/connection limits are 1024 each; runtime integration can map configured connection limits through `DnsOptions`. OpCode extensions, signed DNS authentication and zone transfers are unsupported. The executable still exits as a scaffold; Task 8 will integrate startup and supervision. All current DNS tests use local fixtures and ephemeral ports, not public DNS.
+For the packaged service:
+
+```bash
+sudo systemctl stop nullgate.service
+sudo install -d -m 0700 /root/nullgate-backups
+sudo sh -c 'umask 077; tar -czf /root/nullgate-backups/state-and-config.tar.gz -C / var/lib/nullgate etc/nullgate'
+sudo apt-get install ./nullgate_NEW_VERSION_amd64.deb
+# Keep the existing conffile and inspect any .dpkg-dist version before changing it.
+sudo systemctl start nullgate.service
+```
+
+For the user install, stop its foreground/service process, then use a protected archive of `$HOME/.local/share/nullgate` and `$HOME/.config/nullgate` before rerunning the new bundle's user installer. It preserves existing configuration/data. Include any external referenced secret/key files separately; verify backups before deleting originals.
+
+To recover, keep the service stopped, move the failed state aside, restore the full matching configuration/state backup, restore nullgate ownership and0700/0600 permissions, and start the matching previously verified binary/package. A schema upgrade may prevent binary-only downgrade; restore its matching state backup too. First-release rehearsals cover backup/restore and same-version reinstall; cross-version data migrations are not claimed validated.
+
+A corrupt/incomplete/expired inspection CA fails clearly and is never silently replaced. Restore the complete original CA bundle with the rest of the backup. Deliberate rotation is an offline operation: stop, securely archive the entire old inspection-ca directory, explicitly remove it from the active data location, restart to generate a new identity, redistribute new public trust, and remove old client trust. Do not delete CA state merely to suppress an error. There is no automatic rotation or password-reset endpoint. For lost local passwords, restore a backup whose credentials are known, or explicitly configure trusted OIDC access while stopped; do not discard the policy database to reset accounts.
+
+## Authentication and validation evidence
+
+Local username/password is the default; first Administrator provisioning is explicit and does not overwrite an existing local account set. Sessions are revocable and bounded to eight hours. Additional local account-management UI/CLI is not provided in this release. Viewer access can be assigned through explicit OIDC role mappings; the existing trusted application interface supports local roles but is not an operator management endpoint. See [administration](administration.md) for OIDC/PKCE, protected client-secret files, provider logout, role refresh and no-auth mode. Explicit `mode="none"` grants Administrator and should be limited to deliberately isolated deployments; CSRF protections remain active.
+
+The release rehearsal exercises clean local-user and dedicated non-root/TLS configurations with local upstreams, first provisioning, mixed rules, CA trust/removal, backup/restore and persistent identity. System trust changes are confined to disposable test containers, never the build host. The exact tested targets and any unvalidated init/platform paths are recorded in the release validation report. A container process rehearsal does not establish that a systemd unit boots on a full machine; verify service activation on the intended host before rollout.

@@ -1,4 +1,4 @@
-//! Opaque CONNECT transport and revision-aware invalidation. No TLS is terminated here.
+//! CONNECT dispatch and revision-aware ownership for opaque and inspected connections.
 use crate::{forward::ProxyBody, server::HttpOptions};
 use hyper::{
     Request, Response, StatusCode, Version,
@@ -65,6 +65,7 @@ impl fmt::Debug for TunnelControl {
 // The HTTP driver signals only after its IO future/service/permit have dropped.
 #[derive(Clone, Default)]
 pub(crate) struct ConnectionLifetime {
+    _metrics: Option<Arc<nullgate_core::metrics::ConnectionGuard>>,
     pub cancel: CancellationToken,
     ownership: Arc<Mutex<ConnectionOwnership>>,
 }
@@ -88,6 +89,14 @@ impl Drop for HttpDriverGuard {
     }
 }
 impl ConnectionLifetime {
+    pub fn metered(metrics: &nullgate_core::metrics::Metrics) -> Self {
+        Self {
+            _metrics: Some(Arc::new(
+                metrics.connection(nullgate_core::ServiceKind::Http),
+            )),
+            ..Self::default()
+        }
+    }
     pub fn driver_guard(&self) -> HttpDriverGuard {
         HttpDriverGuard(self.clone())
     }
@@ -328,6 +337,8 @@ async fn connect(target: &NormalizedAuthority) -> std::io::Result<TcpStream> {
 /// Inputs owned by the existing HTTP listener; admission is shared with ordinary requests.
 pub(crate) struct TunnelContext<'a> {
     pub control: &'a TunnelControl,
+    pub inspection: Option<Arc<crate::inspection::Inspection>>,
+    pub requests: Arc<tokio::sync::Semaphore>,
     pub policy: PolicySubscription,
     pub options: &'a HttpOptions,
     pub tracker: &'a TaskTracker,
@@ -353,8 +364,66 @@ pub(crate) async fn handle(
         context.lifetime,
     ) {
         Ok(lease) => lease,
-        Err(status) => return crate::server::local(status, true),
+        Err(status) => {
+            if status == StatusCode::FORBIDDEN {
+                context.options.metrics.decision(
+                    nullgate_core::metrics::Traffic::Connect,
+                    nullgate_core::metrics::DecisionKind::Blocked,
+                );
+            }
+            return crate::server::local(status, true);
+        }
     };
+    context.options.metrics.decision(
+        nullgate_core::metrics::Traffic::Connect,
+        nullgate_core::metrics::DecisionKind::Allowed,
+    );
+    if lease.inspection
+        && let Some(inspection) = context.inspection
+    {
+        let upgrade = hyper::upgrade::on(&mut request);
+        let tracker = TaskTracker::new();
+        let inside = crate::inspection::Context {
+            target,
+            policy: context.policy.clone(),
+            options: context.options.clone(),
+            requests: context.requests,
+            inspection,
+            tracker: tracker.clone(),
+        };
+        let timeout = context.options.request_header_timeout;
+        context.tracker.spawn(async move {
+            let mut lease = lease;
+            // Inspected HTTP acquires request admission per message; TLS is connection-bounded.
+            lease.request.take();
+            {
+                let invalidated = lease.invalidated(context.policy, context.shutdown);
+                tokio::pin!(invalidated);
+                let upgraded = tokio::select! {
+                    biased;
+                    _=&mut invalidated=>None,
+                    result=tokio::time::timeout(timeout,upgrade)=>result.ok().and_then(Result::ok),
+                };
+                if let Some(upgraded) = upgraded {
+                    tokio::select! {
+                        biased;
+                        _=&mut invalidated=>{},
+                        _=crate::inspection::serve(TokioIo::new(upgraded),inside)=>{},
+                    }
+                }
+            }
+            tracker.close();
+            tracker.wait().await;
+            // Every nested socket/driver has gone before the lease acknowledges invalidation.
+            drop(lease);
+        });
+        let mut response = Response::new(ProxyBody::empty());
+        response.headers_mut().insert(
+            "nullgate-https-url-filtering",
+            hyper::header::HeaderValue::from_static("inspected"),
+        );
+        return response;
+    }
     let upstream = tokio::select! {
         biased;
         _ = lease.invalidated(context.policy.clone(), context.shutdown.clone()) => {
@@ -381,7 +450,11 @@ pub(crate) async fn handle(
     let mut response = Response::new(ProxyBody::empty());
     response.headers_mut().insert(
         "nullgate-https-url-filtering",
-        hyper::header::HeaderValue::from_static("unavailable"),
+        hyper::header::HeaderValue::from_static(if context.inspection.is_some() {
+            "passthrough"
+        } else {
+            "unavailable"
+        }),
     );
     response
 }

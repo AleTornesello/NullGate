@@ -1,4 +1,4 @@
-//! Pure validation and policy evaluation, reusable by future inspected HTTPS forwarding.
+//! Pure validation and policy evaluation, reused by inspected HTTPS forwarding.
 use hyper::{HeaderMap, StatusCode, Uri, Version};
 use nullgate_core::{
     HttpScheme, NormalizedUrl, PolicySnapshot, UrlError, normalize_authority, normalize_url,

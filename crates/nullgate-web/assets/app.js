@@ -63,8 +63,9 @@ for (const form of document.querySelectorAll("form[action]")) {
         if (response.status === 401) message = form.dataset.kind === "login" ? "Username or password not accepted." : "Your session expired. Sign in again before retrying.";
         throw new Error(message);
       }
+      if (form.dataset.kind === "oidc") { location.assign(result.authorization_url); return; }
       if (form.dataset.kind === "login") { form.reset(); location.assign("/"); return; }
-      if (form.dataset.kind === "logout") { location.assign("/login"); return; }
+      if (form.dataset.kind === "logout") { if(result.message) {try {sessionStorage.setItem(storageKey,result.message);}catch (_) {}} location.assign(result.redirect || "/login"); return; }
       const message = describe(result);
       try { sessionStorage.setItem(storageKey, message); } catch (_) { show(message); return; }
       location.reload();

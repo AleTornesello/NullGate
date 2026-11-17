@@ -8,10 +8,7 @@ use std::{
     sync::{Arc, Mutex},
     task::{Context, Poll},
 };
-use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
-    net::TcpStream,
-};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 const MAX_HEAD: usize = 32 * 1024;
 const MAX_TARGET: usize = 8192;
 pub(crate) enum Ingress {
@@ -35,15 +32,15 @@ enum State {
     Closed,
     Tunnel,
 }
-pub(crate) struct GuardedIo {
-    socket: TcpStream,
+pub(crate) struct GuardedIo<S> {
+    socket: S,
     state: State,
     heads: Heads,
     pending: Vec<u8>,
     offset: usize,
 }
-impl GuardedIo {
-    pub fn new(socket: TcpStream, heads: Heads) -> Self {
+impl<S: AsyncRead + AsyncWrite + Unpin> GuardedIo<S> {
+    pub fn new(socket: S, heads: Heads) -> Self {
         Self {
             socket,
             state: State::Head(Head::default()),
@@ -266,7 +263,7 @@ fn parse_head(bytes: &[u8]) -> Result<(String, State), StatusCode> {
     };
     Ok((target.into(), state))
 }
-impl AsyncRead for GuardedIo {
+impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for GuardedIo<S> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -309,7 +306,7 @@ impl AsyncRead for GuardedIo {
         }
     }
 }
-impl AsyncWrite for GuardedIo {
+impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for GuardedIo<S> {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,

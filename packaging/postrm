@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
+# Retain private state and its service UID; cleanup/CA rotation is an explicit operator action.

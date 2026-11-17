@@ -3,6 +3,7 @@ name = "nullgate-http"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [lints]
 workspace = true
@@ -17,6 +18,8 @@ http-body-util.workspace = true
 httparse.workspace = true
 
 rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-native-certs = "=0.8.5"
 rcgen.workspace = true
 rustix = { version = "=1.1.4", features = ["fs", "process"] }
 time = "=0.3.55"
@@ -24,4 +27,3 @@ x509-parser = { version = "=0.18.1", features = ["verify-aws"] }
 pem = "=4.0.0"
 
 [dev-dependencies]
-tokio-rustls.workspace = true

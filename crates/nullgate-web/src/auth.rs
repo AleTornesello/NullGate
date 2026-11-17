@@ -51,6 +51,7 @@ pub struct AuthService {
     dummy: Arc<String>,
     clock: Arc<dyn Clock>,
     mode: AuthMode,
+    external_context: Option<String>,
 }
 fn argon() -> Result<Argon2<'static>, AuthError> {
     Ok(Argon2::new(
@@ -85,6 +86,7 @@ fn password_valid(password: &str) -> Result<(), AuthError> {
 pub(crate) struct Grant {
     pub token: String,
     pub csrf: String,
+    pub max_age: u64,
 }
 impl AuthService {
     pub async fn open(path: PathBuf, mode: AuthMode) -> Result<Self, AuthError> {
@@ -98,6 +100,27 @@ impl AuthService {
         if mode == AuthMode::Oidc {
             return Err(AuthError::Unavailable);
         }
+        Self::open_configured(path, mode, None, clock).await
+    }
+    pub async fn open_external(path: PathBuf, context: String) -> Result<Self, AuthError> {
+        Self::open_external_with_clock(path, context, Arc::new(SystemClock)).await
+    }
+    pub async fn open_external_with_clock(
+        path: PathBuf,
+        context: String,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self, AuthError> {
+        if !session::valid(&context) {
+            return Err(AuthError::Invalid);
+        }
+        Self::open_configured(path, AuthMode::Oidc, Some(context), clock).await
+    }
+    async fn open_configured(
+        path: PathBuf,
+        mode: AuthMode,
+        external_context: Option<String>,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self, AuthError> {
         let (repo, dummy) = tokio::task::spawn_blocking(move || {
             Ok::<_, AuthError>((
                 AuthRepository::open(path).map_err(|_| AuthError::Unavailable)?,
@@ -113,6 +136,7 @@ impl AuthService {
             dummy: Arc::new(dummy),
             clock,
             mode,
+            external_context,
         })
     }
     async fn work<T: Send + 'static>(
@@ -150,6 +174,9 @@ impl AuthService {
         .map_err(|_| AuthError::Unavailable)?
     }
     pub async fn provision_admin(&self, name: &str, password: &str) -> Result<(), AuthError> {
+        if self.mode == AuthMode::Oidc {
+            return Err(AuthError::Invalid);
+        }
         let name = username(name)?;
         password_valid(password)?;
         let password = password.to_owned();
@@ -173,6 +200,9 @@ impl AuthService {
         password: &str,
         role: Role,
     ) -> Result<(), AuthError> {
+        if self.mode == AuthMode::Oidc {
+            return Err(AuthError::Invalid);
+        }
         let actor = self.identity(administrator_session).await?;
         if actor.role != Role::Administrator {
             return Err(AuthError::Forbidden);
@@ -216,12 +246,21 @@ impl AuthService {
         if now < 0 {
             return Err(AuthError::Unavailable);
         }
+        let context = self.external_context.clone();
         self.work(move |repo| {
-            repo.identity(&digest, now)
+            let identity = if let Some(context) = context {
+                repo.external_identity(&digest, now, &context)
+            } else {
+                repo.local_identity(&digest, now)
+            };
+            identity
                 .map_err(|_| AuthError::Unavailable)?
                 .ok_or(AuthError::Unauthorized)
         })
         .await
+    }
+    pub fn is_external(&self) -> bool {
+        self.mode == AuthMode::Oidc
     }
     pub(crate) fn no_auth(&self) -> bool {
         self.mode == AuthMode::None
@@ -278,7 +317,62 @@ impl AuthService {
                 .map_err(|_| AuthError::Unavailable)?;
             Ok(Grant {
                 csrf: session::csrf(&token),
+                max_age: 28800,
                 token,
+            })
+        })
+        .await
+    }
+    pub(crate) async fn external_login(
+        &self,
+        identity: crate::oidc::VerifiedIdentity,
+        old: Option<String>,
+    ) -> Result<Grant, AuthError> {
+        if self.mode != AuthMode::Oidc || self.external_context.as_ref() != Some(&identity.context)
+        {
+            return Err(AuthError::Invalid);
+        }
+        let clock = self.clock.clone();
+        self.work(move |repo| {
+            let old = old
+                .filter(|token| session::valid(token))
+                .map(|token| session::digest(&token));
+            let Some(role) = identity.role else {
+                repo.revoke_external(&identity.issuer, &identity.subject)
+                    .map_err(|_| AuthError::Unavailable)?;
+                if let Some(old) = old {
+                    repo.revoke(&old).map_err(|_| AuthError::Unavailable)?;
+                }
+                return Err(AuthError::Forbidden);
+            };
+            let now = clock.now();
+            let expires = now
+                .checked_add(28800)
+                .ok_or(AuthError::Unavailable)?
+                .min(identity.expires);
+            if now < 0 || expires <= now {
+                return Err(AuthError::Unauthorized);
+            }
+            let token = session::random()?;
+            let login = nullgate_core::ExternalLogin {
+                issuer: identity.issuer,
+                subject: identity.subject,
+                display_name: identity.display,
+                role,
+                context: identity.context,
+            };
+            repo.external_session(&login, &session::digest(&token), old.as_ref(), now, expires)
+                .map_err(|error| {
+                    if error == nullgate_core::StorageError::InvalidSource {
+                        AuthError::Forbidden
+                    } else {
+                        AuthError::Unavailable
+                    }
+                })?;
+            Ok(Grant {
+                csrf: session::csrf(&token),
+                token,
+                max_age: (expires - now) as u64,
             })
         })
         .await

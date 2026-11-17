@@ -555,12 +555,13 @@ fn example_config_defaults_and_relative_paths_are_nonsecret() {
     )
     .unwrap();
     assert_eq!(no_auth.auth, AuthMode::None);
-    let oidc = AppConfig::parse(
-        &sample().replace("mode = \"local\"", "mode = \"oidc\""),
-        Path::new("/tmp/config.toml"),
-    )
-    .unwrap();
-    assert_eq!(oidc.auth, AuthMode::Oidc);
+    assert!(
+        AppConfig::parse(
+            &sample().replace(r#"mode = "local""#, r#"mode = "oidc""#),
+            Path::new("/tmp/config.toml")
+        )
+        .is_err()
+    );
     let without_auth = sample().split("[auth]").next().unwrap();
     assert_eq!(
         AppConfig::parse(without_auth, Path::new("/tmp/config.toml"))

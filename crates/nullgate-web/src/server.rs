@@ -78,6 +78,9 @@ impl WebService {
             crate::WebCapabilities {
                 remote,
                 public_ca: None,
+                https_inspection: false,
+                oidc: None,
+                metrics: None,
             },
             limit,
             cancel,
@@ -92,7 +95,8 @@ impl WebService {
         limit: usize,
         cancel: CancellationToken,
     ) -> Result<Self, ServiceFailure> {
-        if limit == 0
+        if auth.is_external() != capabilities.oidc.is_some()
+            || limit == 0
             || limit > 65535
             || config.tls_terminated_by_proxy
                 && (!config.listen.ip().is_loopback()
@@ -182,6 +186,9 @@ impl WebService {
         let mut state = WebState::new(auth, security, management);
         state.remote = capabilities.remote;
         state.public_ca = capabilities.public_ca;
+        state.https_inspection = capabilities.https_inspection;
+        state.oidc = capabilities.oidc;
+        state.metrics = capabilities.metrics;
         let router = crate::router(state, management_routes()).layer(
             middleware::from_fn_with_state(Arc::new(Semaphore::new(limit.min(16))), admission),
         );

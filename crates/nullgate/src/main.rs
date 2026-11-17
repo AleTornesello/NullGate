@@ -129,7 +129,7 @@ async fn main() -> ExitCode {
     };
     tracing::info!(
         web_available = true,
-        https_url_filtering = false,
+        https_url_filtering = true,
         "starting proxy runtime"
     );
     let public_origin = config.web.public_origin.clone();
@@ -195,7 +195,7 @@ fn report(status: &RuntimeStatus, public_origin: Option<&str>, web_secure: bool)
                         web.address
                     )
                 });
-                tracing::info!(dns_udp=%udp.address,dns_tcp=%tcp.address,http=%http.address,web=%web.address,web_origin=%origin,policy_revision=status.policy_revision,https_url_filtering=false,"runtime ready");
+                tracing::info!(dns_udp=%udp.address,dns_tcp=%tcp.address,http=%http.address,web=%web.address,web_origin=%origin,policy_revision=status.policy_revision,https_url_filtering=true,"runtime ready");
             }
             return;
         }

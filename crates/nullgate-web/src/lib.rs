@@ -20,11 +20,14 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 #[derive(Clone)]
 pub struct WebState {
+    pub metrics: Option<Arc<dyn nullgate_core::metrics::MetricsSource>>,
     pub auth: AuthService,
     pub security: WebSecurity,
     pub management: Arc<dyn PolicyManagement>,
     pub remote: Option<Arc<dyn nullgate_core::RemoteManagement>>,
     pub public_ca: Option<Arc<dyn nullgate_core::PublicCaCertificate>>,
+    pub https_inspection: bool,
+    pub oidc: Option<Arc<oidc::OidcService>>,
 }
 impl WebState {
     pub fn new(
@@ -38,6 +41,9 @@ impl WebState {
             management,
             remote: None,
             public_ca: None,
+            https_inspection: false,
+            oidc: None,
+            metrics: None,
         }
     }
 }
@@ -122,10 +128,20 @@ async fn boundary(State(state): State<WebState>, request: Request, next: Next) -
     if !state.security.host_ok(request.headers()) {
         return AuthError::Invalid.into_response();
     }
-    if request
-        .headers()
-        .get("sec-fetch-site")
-        .is_some_and(|v| v == "cross-site")
+    // Provider redirects are cross-site GETs. The callback independently requires
+    // one-shot browser-bound state; login is public and the dashboard landing
+    // page still requires a valid session. Redirect chains retain cross-site.
+    let provider_return = state.auth.is_external()
+        && request.method() == Method::GET
+        && matches!(
+            request.uri().path(),
+            "/api/v1/auth/oidc/callback" | "/login" | "/"
+        );
+    if !provider_return
+        && request
+            .headers()
+            .get("sec-fetch-site")
+            .is_some_and(|v| v == "cross-site")
     {
         return AuthError::Forbidden.into_response();
     }
@@ -184,7 +200,10 @@ pub fn router(state: WebState, management: Router<WebState>) -> Router {
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/me", get(me))
         .layer(DefaultBodyLimit::max(8192));
-    auth.route("/login", get(views::login))
+    let auth = auth
+        .route("/api/v1/auth/oidc/start", post(oidc::start_handler))
+        .route("/api/v1/auth/oidc/callback", get(oidc::callback_handler));
+    auth.route("/login", get(oidc::login_page))
         .route(
             "/app.js",
             get(|| async {
@@ -273,7 +292,7 @@ async fn login(
             state.security.session_name(),
             &grant.token,
             state.security.secure,
-            28800,
+            grant.max_age,
         ),
     );
     set_cookie(
@@ -291,8 +310,17 @@ async fn logout(State(state): State<WebState>, headers: HeaderMap) -> Result<Res
     let token = cookie(&headers, state.security.session_name())?;
     state.auth.identity(token.as_deref()).await?;
     csrf(&headers, &state, token.as_deref(), !state.auth.no_auth())?;
+    let browser = cookie(&headers, state.security.oidc_name())?;
     state.auth.logout(token).await?;
-    let mut response = StatusCode::NO_CONTENT.into_response();
+    let mut response = if let Some(oidc) = &state.oidc {
+        if let Some(browser) = browser {
+            oidc.cancel_browser(&browser);
+        }
+        let redirect = oidc.logout_redirect().await;
+        Json(serde_json::json!({"redirect":redirect.as_deref().unwrap_or("/login"),"message":if redirect.is_some(){"NullGate session revoked; continue logout at the provider."}else{"NullGate session revoked; provider logout is unavailable. The provider session may still be active."}})).into_response()
+    } else {
+        StatusCode::NO_CONTENT.into_response()
+    };
     set_cookie(
         &mut response,
         session::cookie(state.security.session_name(), "", state.security.secure, 0),
@@ -306,6 +334,12 @@ async fn logout(State(state): State<WebState>, headers: HeaderMap) -> Result<Res
             0,
         ),
     );
+    if state.auth.is_external() {
+        set_cookie(
+            &mut response,
+            session::cookie(state.security.oidc_name(), "", state.security.secure, 0),
+        );
+    }
     Ok(response)
 }
 async fn me(
@@ -328,12 +362,31 @@ pub mod imports;
 pub mod certificates;
 #[derive(Clone, Default)]
 pub struct WebCapabilities {
+    pub metrics: Option<Arc<dyn nullgate_core::metrics::MetricsSource>>,
     pub remote: Option<Arc<dyn nullgate_core::RemoteManagement>>,
     pub public_ca: Option<Arc<dyn nullgate_core::PublicCaCertificate>>,
+    pub https_inspection: bool,
+    pub oidc: Option<Arc<oidc::OidcService>>,
 }
 impl WebState {
     pub fn with_public_ca(mut self, public: Arc<dyn nullgate_core::PublicCaCertificate>) -> Self {
         self.public_ca = Some(public);
+        self
+    }
+}
+
+pub mod oidc;
+impl WebState {
+    pub fn with_oidc(mut self, provider: Arc<oidc::OidcService>) -> Self {
+        self.oidc = Some(provider);
+        self
+    }
+}
+
+pub mod metrics;
+impl WebState {
+    pub fn with_metrics(mut self, source: Arc<dyn nullgate_core::metrics::MetricsSource>) -> Self {
+        self.metrics = Some(source);
         self
     }
 }

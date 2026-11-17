@@ -3,6 +3,7 @@ name: Rust
 on:
   push:
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
@@ -10,21 +11,45 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: never
+      NULLGATE_E2E_ARTIFACTS: ${{ github.workspace }}/target/e2e-artifacts
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
+      - name: Check local test prerequisites
+        run: command -v prlimit && command -v kill && python3 --version
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Build all targets
         run: cargo build --workspace --all-targets --locked
       - name: Lint all targets
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Run tests
-        run: cargo test --workspace --locked
+      - name: Test CI behavioral guard
+        run: python3 -m unittest discover -s scripts -p test_verify_test_run.py
+      - name: Run all behavioral tests (including the real executable)
+        shell: bash
+        run: |
+          mkdir -p target/e2e-artifacts
+          rm -f target/test-exit-code
+          cargo test --workspace --locked 2>&1 | tee target/test-output.log
+          echo 0 > target/test-exit-code
+      - name: Require nonzero executable coverage
+        if: always()
+        run: python3 scripts/verify_test_run.py target/test-output.log --exit-code target/test-exit-code --summary target/e2e-artifacts/test-summary.json
       - name: Build documentation
         run: cargo doc --workspace --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
       - name: Check executable metadata
         run: cargo run --locked --bin nullgate -- --version
+      - name: Retain secret-free failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: behavioral-failure-summary
+          path: target/e2e-artifacts/*.json
+          if-no-files-found: error
+          retention-days: 7

@@ -1,78 +1,53 @@
 # NullGate
 
-NullGate is a Rust project for blocking unwanted domains and specific HTTP and HTTPS URLs. It combines a DNS proxy, an HTTP proxy, a proxy orchestrator, and a web interface.
+NullGate provides shared DNS and explicit HTTP/HTTPS filtering with a Rust web interface. It supports mixed blocklists, immediate policy updates, manual file/remote imports, Administrator/Viewer authorization, local or OIDC login, a persistent inspection CA and aggregate metrics.
 
-Run NullGate on the same machine as your browser or on a dedicated server serving multiple devices. All devices share the same blocking rules.
+## Install and configure
 
-## Project status
+The first release target is **Linux x86_64 GNU, Debian 12/glibc 2.36 baseline**. Candidate preparation produces a user tarball, an amd64 Debian package, build provenance and SHA256 checksums. No release has been published by this work.
 
-The executable now loads TOML configuration and runs supervised DNS (UDP/TCP), HTTP filtering and opaque CONNECT passthrough over durable SQLite policy. It reports readiness after listener binding, restarts failed proxies with bounded backoff, and handles SIGINT/SIGTERM cleanup. The authenticated Rust web interface now supports mixed blocklists, manual entries and plain-text file imports with line diagnostics and immediate publication. Administrator-triggered remote imports and refreshes are supported with bounded public-network fetching and per-source replacement. A persistent local inspection CA supports hostname certificate issuance and Administrator-only public-certificate downloads; HTTPS interception remains disabled. Metrics and TLS inspection remain later work. HTTPS URL rules are parsed and stored but are not enforced inside CONNECT; URL-only hosts stay permitted.
+Follow the [deployment guide](docs/deployment.md) for checksum verification, user/package installation, explicit first-run Administrator provisioning, listeners/upstreams, client proxy/DNS settings, CA trust/removal, dedicated HTTPS, upgrades and offline backups/recovery. There are no default credentials or pre-generated private keys. Normal package installation does not start an unprovisioned service.
 
-## Planned feature set
+All clients share one policy. Domain blocks return DNS NXDOMAIN; blocked HTTP/HTTPS messages receive an empty403. URL matching ignores queries and supports wildcards. Only HTTPS URL-listed hosts are inspected; unlisted hosts preserve their end-to-end certificates. Inspected clients must trust the public NullGate CA and support HTTP/1.1. URL-only rules do not block host DNS resolution.
 
-- Block exact domains or wildcard subdomains.
-- Block exact URLs or URL patterns with wildcards, ignoring query parameters.
-- Filter HTTPS URLs using a locally trusted CA, inspecting only domains derived from URL blocklists.
-- Create mixed domain/URL blocklists in the web interface, enter rules manually, or import them from files and remote URLs.
-- Apply saved rule changes immediately and refresh remote sources on demand.
-- Manage access with Administrator and Viewer roles.
-- Use username/password authentication by default, optional external authentication, or explicitly disable authentication.
-- View metrics in the web interface; the metrics themselves are TBD.
+NullGate filters traffic actually routed to its listeners. It does not transparently enforce routing, prevent alternate DNS/DoH/QUIC/direct connections, or authenticate proxy clients. Pinning and application-specific certificate stores can make inspection incompatible. See the [enforcement boundaries](docs/deployment.md#enforcement-boundaries).
 
-## How filtering works
+## Prepare a reproducible candidate
 
-Domain rules match DNS names. A blocked DNS query receives **NXDOMAIN**. The HTTP proxy returns an empty **403 Forbidden** response when it blocks an HTTP or HTTPS request.
+Use Python3.11+, Docker on Linux amd64, the pinned Rust toolchain, and locked registry sources:
 
-For HTTPS URL filtering (planned in Task 13), configure the client to use the HTTP proxy and install NullGate's generated CA certificate as trusted. This enables TLS inspection on domains appearing in URL rules. Other domains pass through without decryption.
-
-```text
-# Block this domain, but not its subdomains
-example.com
-
-# Block subdomains, but not the parent domain
-*.tracking.example.com
-
-# Block exactly this path, ignoring query parameters
-https://news.example.com/ads
-
-# Block this path and everything beneath it
-https://news.example.com/sponsored/*
+```bash
+cargo fetch --locked
+python3 -m unittest discover -s scripts -p test_release.py
+python3 scripts/release.py --reproduce --output /tmp/nullgate-candidate
+python3 scripts/rehearse_release.py --artifacts /tmp/nullgate-candidate/artifacts --report /tmp/nullgate-candidate/VALIDATION.json
+(cd /tmp/nullgate-candidate/artifacts && sha256sum -c SHA256SUMS)
 ```
 
-## Documentation
+Both compiler and packager images are pinned by digest in `packaging/release.json`. Builds run offline against the fetched public Cargo registry; no Cargo credentials are mounted. Two independent clean target directories must produce identical checksums. Metadata records the input-tree hash, compiler/packager identities, normalized epoch, version and binary hash. Uncommitted candidates are explicitly marked dirty; use `--require-clean` for release preparation from a committed checkout.
 
-- [Architecture](docs/architecture.md): components and responsibilities.
-- [Filtering rules](docs/filtering-rules.md): blocklist format and matching examples.
-- [Administration](docs/administration.md): blocklists, authentication, roles, and certificates.
-- [Deployment](docs/deployment.md): local and shared-server operation, client configuration, and open decisions.
-- [Implementation plan](docs/superpowers/plans/2026-11-09-nullgate-implementation.md): prioritized tasks, dependencies, and acceptance checks.
+The manual **Prepare release candidate** workflow first requires the full CI checks, then builds twice, runs packaged-executable E2E and clean installation rehearsals, and uploads candidates for review. It never creates a release, pushes a tag or publishes an environment. Read `VALIDATION.json` and `reproducibility.json` for actual results and validation limits. Full systemd boot and cross-version schema migration require separate host validation; a container process test does not prove either.
 
-## Development
+## Development and verification
 
-All components use Rust 2024. Install [Rust through rustup](https://rustup.rs/); `rust-toolchain.toml` pins the toolchain and requests rustfmt and Clippy. Run commands from the repository root.
-
-```text
-crates/
-├── nullgate/               # Executable entry point
-├── nullgate-core/          # Shared rules, configuration, and types
-├── nullgate-dns/           # DNS proxy boundary
-├── nullgate-http/          # HTTP proxy and HTTPS inspection boundary
-├── nullgate-orchestrator/  # Lifecycle and rule coordination boundary
-└── nullgate-web/           # Web administration boundary
-```
-
-```sh
+```bash
 cargo build --workspace --all-targets --locked
-cargo run --locked --bin nullgate -- --config config/nullgate.example.toml
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-cargo doc --workspace --no-deps --locked
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
+cargo test -p nullgate --test end_to_end --locked
 ```
 
-DNS, unencrypted HTTP and opaque HTTPS CONNECT passthrough are implemented as cancellable library services; the web service now provides authentication, role middleware, a blocklist API and a Rust-rendered interface. The executable loads configuration and runs both proxies through orchestration. Behavioral tests run with `cargo test -p nullgate-core --test rules --locked` and `cargo test -p nullgate-core --test storage --locked`; `cargo test -p nullgate-orchestrator --test policy_updates --locked` checks publication and failure recovery. `cargo test -p nullgate-dns --test dns_proxy --locked` checks DNS against local UDP/TCP fixtures. `cargo test -p nullgate-http --test http_proxy --locked` checks unencrypted HTTP against local streaming fixtures. `cargo test -p nullgate-http --test connect_proxy --locked` checks CONNECT with local TCP/TLS fixtures. `cargo test -p nullgate-orchestrator --test lifecycle --locked` checks supervision with virtual time, and `cargo test -p nullgate --test executable --locked` launches the real binary against local fixtures. HTTPS URL filtering is unavailable until Task 13; URL-only hosts remain permitted through CONNECT. CI runs the commands above, with documentation warnings treated as errors.
+The [system verification report](docs/system-verification.md) audits Tasks5–15 and describes the three real-executable scenarios and secret-free CI failure diagnostics. CI rejects missing/ignored/zero E2E coverage and unsuccessful Cargo completion. Release rehearsals use local upstreams, disposable state and isolated trust; the shared host's trust store is unchanged.
 
-Task 1 selected dependencies and matching contracts in [implementation decisions](docs/implementation-decisions.md). Task 2 activates `idna` in core; Task 3 adds rusqlite (bundled SQLite), Serde, TOML and safe configuration-path diagnostics. Task 4 activates Tokio in core and orchestration for subscriptions and the bounded writer. Task 5 activates Hickory protocol support and tokio-util in DNS. Task 6 activates Hyper, hyper-util, http-body-util, Tokio/tokio-util and httparse in HTTP. Task 7 activates rustls, tokio-rustls and rcgen only as HTTP test dependencies for local TLS fixtures. Task 8 activates Tokio/tokio-util and structured tracing for orchestration/the executable. Task 9 activates Axum/Argon2id and crypto helper crates for local browser authentication. Task 10 activates Maud and administration TLS support. Other selected dependencies remain inactive until their owning tasks. The first release targets Linux x86_64; packaging remains to be decided.
+## Documentation and license
 
+- [Deployment](docs/deployment.md): local/dedicated installation and operational commands.
+- [Administration](docs/administration.md): roles, imports, certificates, authentication and metrics.
+- [Filtering rules](docs/filtering-rules.md): exact/wildcard matching and examples.
+- [Architecture](docs/architecture.md): crate responsibilities and dependency direction.
+- [Implementation decisions](docs/implementation-decisions.md): confirmed contracts and implementation records.
+- [Plan](docs/superpowers/plans/2026-11-09-nullgate-implementation.md): delivery checkpoints.
 
-The non-secret [example configuration](config/nullgate.example.toml) describes schema 1. `AppConfig::load` validates it and resolves relative data/TLS paths against its directory. The blocking repository stores named mixed lists, source memberships and latest import summaries with revision-checked transactions. Core supplies immutable policy subscriptions and an injectable management trait. The orchestrator’s bounded worker now coordinates storage, activation acknowledgements and complete snapshot publication. The executable now loads configuration and existing durable policy. A fresh database starts with empty lists. Provision the first Administrator, open the logged web origin, and manage lists through the web interface. Startup binds the configured web listener and, for direct HTTPS, loads protected certificate/key files. See [Administrator provisioning and authentication](docs/administration.md#local-authentication-library-task-9) for the explicit local bootstrap command.
+NullGate is licensed under [MIT](LICENSE). Dependency notices accompany the prepared artifacts.

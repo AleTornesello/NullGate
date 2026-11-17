@@ -30,6 +30,7 @@ use tokio::{
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 #[derive(Clone, Debug)]
 pub struct HttpOptions {
+    pub metrics: nullgate_core::metrics::Metrics,
     pub max_connections: usize,
     pub max_requests: usize,
     pub connect_timeout: Duration,
@@ -39,6 +40,7 @@ pub struct HttpOptions {
 impl Default for HttpOptions {
     fn default() -> Self {
         Self {
+            metrics: nullgate_core::metrics::Metrics::default(),
             max_connections: 1024,
             max_requests: 1024,
             connect_timeout: Duration::from_secs(10),
@@ -54,6 +56,7 @@ pub struct HttpService {
     cancel: CancellationToken,
     worker: Option<JoinHandle<Result<(), ServiceFailure>>>,
     tunnels: crate::TunnelControl,
+    inspection_enabled: bool,
 }
 impl HttpService {
     pub async fn start(
@@ -78,6 +81,26 @@ impl HttpService {
         options: HttpOptions,
         cancel: CancellationToken,
         tunnels: crate::TunnelControl,
+    ) -> Result<Self, ServiceFailure> {
+        Self::start_configured(config, policy, options, cancel, tunnels, None).await
+    }
+    pub async fn start_with_inspection(
+        config: HttpConfig,
+        policy: PolicySubscription,
+        options: HttpOptions,
+        cancel: CancellationToken,
+        tunnels: crate::TunnelControl,
+        inspection: Arc<crate::inspection::Inspection>,
+    ) -> Result<Self, ServiceFailure> {
+        Self::start_configured(config, policy, options, cancel, tunnels, Some(inspection)).await
+    }
+    async fn start_configured(
+        config: HttpConfig,
+        policy: PolicySubscription,
+        options: HttpOptions,
+        cancel: CancellationToken,
+        tunnels: crate::TunnelControl,
+        inspection: Option<Arc<crate::inspection::Inspection>>,
     ) -> Result<Self, ServiceFailure> {
         if options.max_connections == 0
             || options.max_connections > 65535
@@ -129,7 +152,9 @@ impl HttpService {
         let cancel = cancel.child_token();
         let token = cancel.clone();
         let tracker = TaskTracker::new();
+        let inspection_enabled = inspection.is_some();
         let state = Arc::new(State {
+            inspection,
             tunnels: tunnels.clone(),
             shutdown: token.clone(),
             policy,
@@ -154,6 +179,7 @@ impl HttpService {
             cancel,
             worker: Some(worker),
             tunnels,
+            inspection_enabled,
         })
     }
     pub fn tunnels(&self) -> crate::TunnelControl {
@@ -162,7 +188,7 @@ impl HttpService {
     pub fn capabilities(&self) -> crate::HttpCapabilities {
         crate::HttpCapabilities {
             https_connect_passthrough: true,
-            https_url_filtering: false,
+            https_url_filtering: self.inspection_enabled,
         }
     }
     pub fn local_addr(&self) -> SocketAddr {
@@ -211,6 +237,7 @@ fn failure(
     }
 }
 struct State {
+    inspection: Option<Arc<crate::inspection::Inspection>>,
     tunnels: crate::TunnelControl,
     shutdown: CancellationToken,
     policy: PolicySubscription,
@@ -247,7 +274,7 @@ async fn serve(
                 };
                 let state = state.clone();
                 clients.spawn(async move {
-                    let lifetime = crate::tunnel::ConnectionLifetime::default();
+                    let lifetime = crate::tunnel::ConnectionLifetime::metered(&state.options.metrics);
                     let closed = lifetime.driver_guard();
                     {
                         let permit = Arc::new(permit);
@@ -314,6 +341,8 @@ async fn handle(
             &raw,
             crate::tunnel::TunnelContext {
                 control: &state.tunnels,
+                inspection: state.inspection.clone(),
+                requests: state.requests.clone(),
                 policy: state.policy.clone(),
                 options: &state.options,
                 tracker: &state.tracker,
@@ -345,8 +374,16 @@ async fn handle(
         Err(_) => return Ok(local(StatusCode::SERVICE_UNAVAILABLE, close)),
     };
     if evaluate(&snapshot, target.normalized()) == Decision::Blocked {
+        state.options.metrics.decision(
+            nullgate_core::metrics::Traffic::Http,
+            nullgate_core::metrics::DecisionKind::Blocked,
+        );
         return Ok(local(StatusCode::FORBIDDEN, close));
     }
+    state.options.metrics.decision(
+        nullgate_core::metrics::Traffic::Http,
+        nullgate_core::metrics::DecisionKind::Allowed,
+    );
     let Ok(permit) = state.requests.clone().try_acquire_owned() else {
         return Ok(local(StatusCode::SERVICE_UNAVAILABLE, close));
     };

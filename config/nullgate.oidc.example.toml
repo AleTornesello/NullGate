@@ -1,0 +1,25 @@
+# Non-secret OIDC example. Terminate HTTPS at a trusted proxy on this loopback backend.
+schema_version = 1
+data_dir = "../data"
+[dns]
+udp_listen = "127.0.0.1:5353"
+tcp_listen = "127.0.0.1:5353"
+upstreams = ["1.1.1.1:53", "9.9.9.9:53"]
+[http]
+listen = "127.0.0.1:8080"
+[web]
+listen = "127.0.0.1:8081"
+public_origin = "https://nullgate.example"
+tls_terminated_by_proxy = true
+[auth]
+mode = "oidc"
+[oidc]
+issuer = "https://sso.example/realms/nullgate"
+client_id = "nullgate"
+redirect_uri = "https://nullgate.example/api/v1/auth/oidc/callback"
+# For confidential clients, create an owner-only regular file; never put its value in TOML.
+client_secret_file = "../secrets/oidc-client"
+# Omit client_secret_file for a public client that enforces PKCE S256.
+role_claim = "/realm_access/roles"
+administrator_values = ["nullgate-admin"]
+viewer_values = ["nullgate-viewer"]

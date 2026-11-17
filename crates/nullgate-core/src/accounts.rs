@@ -55,9 +55,10 @@ impl AuthRepository {
         let version: i64 = tx.query_row("SELECT version FROM auth_meta WHERE id=1", [], |row| {
             row.get(0)
         })?;
-        if version != 1 {
+        if version != 1 && version != 2 {
             return Err(StorageError::Corrupt);
         }
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS auth_external(issuer TEXT NOT NULL,subject TEXT NOT NULL,user_id INTEGER NOT NULL UNIQUE REFERENCES auth_users(id) ON DELETE CASCADE,display_name TEXT NOT NULL,PRIMARY KEY(issuer,subject));CREATE TABLE IF NOT EXISTS auth_external_sessions(token_hash BLOB PRIMARY KEY REFERENCES auth_sessions(token_hash) ON DELETE CASCADE,context TEXT NOT NULL);UPDATE auth_meta SET version=2 WHERE id=1;")?;
         tx.commit()?;
         Ok(Self { repo })
     }
@@ -112,7 +113,7 @@ impl AuthRepository {
             .repo
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let count: i64 = tx.query_row("SELECT count(*) FROM auth_users", [], |row| row.get(0))?;
+        let count: i64 = tx.query_row("SELECT count(*) FROM auth_users u WHERE NOT EXISTS(SELECT 1 FROM auth_external e WHERE e.user_id=u.id)", [], |row| row.get(0))?;
         let allowed=match authorization {
             AccountCreation::FirstAdministrator=>count==0&&role==Role::Administrator,
             AccountCreation::NoAuthentication=>count>0,
@@ -183,6 +184,138 @@ impl AuthRepository {
             "DELETE FROM auth_sessions WHERE token_hash=?",
             [digest.as_slice()],
         )?;
+        Ok(())
+    }
+}
+
+/// Trusted storage input, created only after provider-token verification by the web auth service.
+pub struct ExternalLogin {
+    pub issuer: String,
+    pub subject: String,
+    pub display_name: String,
+    pub role: Role,
+    pub context: String,
+}
+impl AuthRepository {
+    pub fn external_session(
+        &mut self,
+        login: &ExternalLogin,
+        digest: &[u8; 32],
+        old: Option<&[u8; 32]>,
+        now: i64,
+        expires: i64,
+    ) -> Result<(), StorageError> {
+        if login.issuer.is_empty()
+            || login.issuer.len() > 2048
+            || login.issuer.contains('#')
+            || login.subject.is_empty()
+            || login.subject.len() > 255
+            || login.display_name.is_empty()
+            || login.display_name.len() > 256
+            || login
+                .issuer
+                .chars()
+                .chain(login.subject.chars())
+                .chain(login.display_name.chars())
+                .any(char::is_control)
+            || login.context.len() != 64
+            || !login.context.bytes().all(|b| b.is_ascii_hexdigit())
+            || now < 0
+            || expires <= now
+            || expires.checked_sub(now).is_none_or(|age| age > 28800)
+        {
+            return Err(StorageError::InvalidSource);
+        }
+        let tx = self
+            .repo
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing=tx.query_row("SELECT u.id,u.enabled,u.role FROM auth_external e JOIN auth_users u ON u.id=e.user_id WHERE e.issuer=? AND e.subject=?",params![login.issuer,login.subject],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,bool>(1)?,r.get::<_,String>(2)?))).optional()?;
+        let id = if let Some((id, enabled, role)) = existing {
+            if !enabled {
+                return Err(StorageError::InvalidSource);
+            }
+            if role != login.role.as_str() {
+                tx.execute("DELETE FROM auth_sessions WHERE user_id=?", [id])?;
+            }
+            tx.execute(
+                "UPDATE auth_users SET role=? WHERE id=?",
+                params![login.role.as_str(), id],
+            )?;
+            tx.execute(
+                "UPDATE auth_external SET display_name=? WHERE user_id=?",
+                params![login.display_name, id],
+            )?;
+            id
+        } else {
+            let count: i64 =
+                tx.query_row("SELECT count(*) FROM auth_external", [], |r| r.get(0))?;
+            if count >= 10000 {
+                return Err(StorageError::Capacity);
+            }
+            let name = format!("external:{}#{}", login.issuer, login.subject);
+            tx.execute("INSERT INTO auth_users(username,password_hash,role,enabled)VALUES(?,'!external-login-only!',?,1)",params![name,login.role.as_str()])?;
+            let id = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO auth_external(issuer,subject,user_id,display_name)VALUES(?,?,?,?)",
+                params![login.issuer, login.subject, id, login.display_name],
+            )?;
+            id
+        };
+        tx.execute("DELETE FROM auth_sessions WHERE expires<=?", [now])?;
+        if let Some(old) = old {
+            tx.execute(
+                "DELETE FROM auth_sessions WHERE token_hash=?",
+                [old.as_slice()],
+            )?;
+        }
+        tx.execute("DELETE FROM auth_sessions WHERE user_id=? AND token_hash IN(SELECT token_hash FROM auth_external_sessions WHERE context<>?)",params![id,login.context])?;
+        let count: i64 = tx.query_row("SELECT count(*) FROM auth_sessions", [], |r| r.get(0))?;
+        if count >= 10000 {
+            return Err(StorageError::Capacity);
+        }
+        tx.execute("DELETE FROM auth_sessions WHERE token_hash IN(SELECT token_hash FROM auth_sessions WHERE user_id=? ORDER BY created DESC,rowid DESC LIMIT -1 OFFSET 9)",[id])?;
+        tx.execute(
+            "INSERT INTO auth_sessions(token_hash,user_id,created,expires)VALUES(?,?,?,?)",
+            params![digest.as_slice(), id, now, expires],
+        )?;
+        tx.execute(
+            "INSERT INTO auth_external_sessions(token_hash,context)VALUES(?,?)",
+            params![digest.as_slice(), login.context],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+    pub fn external_identity(
+        &self,
+        digest: &[u8; 32],
+        now: i64,
+        context: &str,
+    ) -> Result<Option<Identity>, StorageError> {
+        let row=self.repo.connection.query_row("SELECT u.id,e.display_name,u.role FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id JOIN auth_external e ON e.user_id=u.id JOIN auth_external_sessions c ON c.token_hash=s.token_hash WHERE s.token_hash=? AND s.expires>? AND u.enabled=1 AND c.context=?",params![digest.as_slice(),now,context],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
+        row.map(|(id, name, role)| {
+            Ok(Identity {
+                user_id: Some(id),
+                username: Some(name),
+                role: Role::parse(&role)?,
+            })
+        })
+        .transpose()
+    }
+    pub fn local_identity(
+        &self,
+        digest: &[u8; 32],
+        now: i64,
+    ) -> Result<Option<Identity>, StorageError> {
+        let external:i64=self.repo.connection.query_row("SELECT count(*) FROM auth_sessions s JOIN auth_external e ON e.user_id=s.user_id WHERE s.token_hash=?",[digest.as_slice()],|r|r.get(0))?;
+        if external != 0 {
+            Ok(None)
+        } else {
+            self.identity(digest, now)
+        }
+    }
+    pub fn revoke_external(&mut self, issuer: &str, subject: &str) -> Result<(), StorageError> {
+        self.repo.connection.execute("DELETE FROM auth_sessions WHERE user_id IN(SELECT user_id FROM auth_external WHERE issuer=? AND subject=?)",params![issuer,subject])?;
         Ok(())
     }
 }

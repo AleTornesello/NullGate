@@ -20,10 +20,13 @@ pub struct Application {
 impl Application {
     /// Config must come from AppConfig's validated parsing/loading boundary.
     pub async fn start(config: AppConfig, cancel: CancellationToken) -> Result<Self, RuntimeError> {
+        let metrics = nullgate_core::metrics::Metrics::default();
+        let metrics_source = Arc::new(crate::metrics::RuntimeMetrics::new(metrics.clone()));
         let tunnels = TunnelControl::default();
         let coordinator = PolicyCoordinator::open(
             config.database_path(),
             PolicyOptions {
+                metrics: metrics.clone(),
                 queue_capacity: config.limits.storage_queue_capacity as usize,
                 activators: vec![Arc::new(tunnels.clone())],
                 ..PolicyOptions::default()
@@ -32,8 +35,33 @@ impl Application {
         .await
         .map_err(RuntimeError::Policy)?;
         let policy = coordinator.handle();
-        let auth = match nullgate_web::AuthService::open(config.database_path(), config.auth).await
-        {
+        let authentication = async {
+            let oidc = if config.auth == nullgate_core::AuthMode::Oidc {
+                Some(
+                    nullgate_web::oidc::OidcService::open(
+                        config
+                            .oidc
+                            .clone()
+                            .ok_or(nullgate_web::AuthError::Invalid)?,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            let auth = if let Some(provider) = &oidc {
+                nullgate_web::AuthService::open_external(
+                    config.database_path(),
+                    provider.context().to_owned(),
+                )
+                .await?
+            } else {
+                nullgate_web::AuthService::open(config.database_path(), config.auth).await?
+            };
+            Ok::<_, nullgate_web::AuthError>((auth, oidc))
+        }
+        .await;
+        let (auth, oidc) = match authentication {
             Ok(auth) => auth,
             Err(_) => {
                 let _ = coordinator.shutdown().await;
@@ -47,12 +75,12 @@ impl Application {
             }
         };
         let data_dir = config.data_dir.clone();
-        let public_ca = match tokio::task::spawn_blocking(move || {
-            nullgate_http::ca::CaProvider::open(&data_dir).map(|ca| ca.public_certificate())
+        let ca = match tokio::task::spawn_blocking(move || {
+            nullgate_http::ca::CaProvider::open(&data_dir).map(Arc::new)
         })
         .await
         {
-            Ok(Ok(public)) => public,
+            Ok(Ok(ca)) => ca,
             result => {
                 let _ = coordinator.shutdown().await;
                 return Err(RuntimeError::InspectionCa(match result {
@@ -61,10 +89,29 @@ impl Application {
                 }));
             }
         };
+        let public_ca = ca.public_certificate();
+        let inspection = match tokio::task::spawn_blocking(move || {
+            nullgate_http::inspection::Inspection::with_system_roots(ca)
+        })
+        .await
+        {
+            Ok(Ok(inspection)) => inspection,
+            result => {
+                let _ = coordinator.shutdown().await;
+                return Err(RuntimeError::InspectionTls(match result {
+                    Ok(Err(error)) => error,
+                    _ => nullgate_http::tls::TlsConfigError::InvalidTrustRoots,
+                }));
+            }
+        };
         let factory = Arc::new(Services {
+            metrics,
+            metrics_source: metrics_source.clone(),
+            inspection,
             config,
             public_ca,
             auth,
+            oidc,
             management: Arc::new(policy.clone()),
             remote: Arc::new(crate::imports::RemoteService::new(
                 Arc::new(policy.clone()),
@@ -85,6 +132,7 @@ impl Application {
                 return Err(error);
             }
         };
+        metrics_source.attach(supervisor.monitor());
         Ok(Self {
             supervisor: Some(supervisor),
             coordinator: Some(coordinator),
@@ -132,9 +180,13 @@ impl Drop for Application {
     }
 }
 struct Services {
+    metrics: nullgate_core::metrics::Metrics,
+    metrics_source: Arc<crate::metrics::RuntimeMetrics>,
     config: AppConfig,
     auth: nullgate_web::AuthService,
+    oidc: Option<Arc<nullgate_web::oidc::OidcService>>,
     public_ca: Arc<dyn nullgate_core::PublicCaCertificate>,
+    inspection: Arc<nullgate_http::inspection::Inspection>,
     management: Arc<dyn PolicyManagement>,
     remote: Arc<dyn nullgate_core::RemoteManagement>,
     policy: PolicySubscription,
@@ -180,6 +232,7 @@ impl ProxyFactory for Services {
                     self.config.dns.clone(),
                     self.policy.clone(),
                     DnsOptions {
+                        metrics: self.metrics.clone(),
                         max_requests: limit,
                         max_tcp_connections: limit,
                         ..DnsOptions::default()
@@ -188,16 +241,18 @@ impl ProxyFactory for Services {
                 )
                 .await?)) as Box<dyn ManagedProxy>),
                 ServiceKind::Http => Ok(Box::new(Http(
-                    HttpService::start_with_tunnel_control(
+                    HttpService::start_with_inspection(
                         self.config.http.clone(),
                         self.policy.clone(),
                         HttpOptions {
+                            metrics: self.metrics.clone(),
                             max_connections: limit,
                             max_requests: limit,
                             ..HttpOptions::default()
                         },
                         cancel,
                         self.tunnels.clone(),
+                        self.inspection.clone(),
                     )
                     .await?,
                 )) as Box<dyn ManagedProxy>),
@@ -207,8 +262,11 @@ impl ProxyFactory for Services {
                         self.auth.clone(),
                         self.management.clone(),
                         nullgate_web::WebCapabilities {
+                            metrics: Some(self.metrics_source.clone()),
                             remote: Some(self.remote.clone()),
                             public_ca: Some(self.public_ca.clone()),
+                            https_inspection: true,
+                            oidc: self.oidc.clone(),
                         },
                         limit,
                         cancel,

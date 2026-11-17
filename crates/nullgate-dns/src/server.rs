@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 /// Bounds for admitted work; runtime wiring can map AppConfig's connection limit here.
 #[derive(Clone, Debug)]
 pub struct DnsOptions {
+    pub metrics: nullgate_core::metrics::Metrics,
     pub max_requests: usize,
     pub max_tcp_connections: usize,
     pub tcp_idle_timeout: Duration,
@@ -29,6 +30,7 @@ pub struct DnsOptions {
 impl Default for DnsOptions {
     fn default() -> Self {
         Self {
+            metrics: nullgate_core::metrics::Metrics::default(),
             max_requests: 1024,
             max_tcp_connections: 1024,
             tcp_idle_timeout: Duration::from_secs(30),
@@ -207,6 +209,7 @@ async fn serve(
     options: DnsOptions,
     cancel: CancellationToken,
 ) -> Result<(), ServiceFailure> {
+    let metrics = options.metrics.clone();
     let requests = Arc::new(Semaphore::new(options.max_requests));
     let connections = Arc::new(Semaphore::new(options.max_tcp_connections));
     let mut tasks = JoinSet::new();
@@ -242,10 +245,11 @@ async fn serve(
                 let udp = udp.clone();
                 let policy = policy.clone();
                 let config = config.clone();
+                let metrics = metrics.clone();
                 tasks.spawn(async move {
                     let _permit = permit;
                     if let Some(response) =
-                        answer(&bytes, &config, &policy, ServiceTransport::Udp).await
+                        answer(&bytes, &config, &policy, ServiceTransport::Udp, &metrics).await
                     {
                         let _ = udp.send_to(&response, peer).await;
                     }
@@ -279,9 +283,11 @@ async fn serve(
                 let config = config.clone();
                 let policy = policy.clone();
                 let idle = options.tcp_idle_timeout;
+                let metrics = metrics.clone();
                 tasks.spawn(async move {
                     let _permit = permit;
-                    let _ = tcp_client(stream, config, policy, requests, idle).await;
+                    let _connection = metrics.connection(ServiceKind::Dns);
+                    let _ = tcp_client(stream, config, policy, requests, idle, metrics).await;
                 });
             }
         }
@@ -325,6 +331,7 @@ async fn tcp_client(
     policy: PolicySubscription,
     requests: Arc<Semaphore>,
     idle: Duration,
+    metrics: nullgate_core::metrics::Metrics,
 ) -> io::Result<()> {
     loop {
         let bytes = tokio::time::timeout(idle, async {
@@ -342,7 +349,9 @@ async fn tcp_client(
             .acquire()
             .await
             .map_err(|_| io::Error::from(io::ErrorKind::Interrupted))?;
-        let Some(response) = answer(&bytes, &config, &policy, ServiceTransport::Tcp).await else {
+        let Some(response) =
+            answer(&bytes, &config, &policy, ServiceTransport::Tcp, &metrics).await
+        else {
             return Ok(());
         };
         tokio::time::timeout(idle, async {
@@ -402,6 +411,7 @@ async fn answer(
     config: &DnsConfig,
     policy: &PolicySubscription,
     transport: ServiceTransport,
+    metrics: &nullgate_core::metrics::Metrics,
 ) -> Option<Vec<u8>> {
     if bytes.len() < 12 || bytes[2] & 0x80 != 0 {
         return None;
@@ -463,8 +473,16 @@ async fn answer(
         Err(_) => return encode_local(&request, ResponseCode::ServFail),
     };
     if blocked_name(snapshot.rules(), request.queries[0].name()) {
+        metrics.decision(
+            nullgate_core::metrics::Traffic::Dns,
+            nullgate_core::metrics::DecisionKind::Blocked,
+        );
         return encode_local(&request, ResponseCode::NXDomain);
     }
+    metrics.decision(
+        nullgate_core::metrics::Traffic::Dns,
+        nullgate_core::metrics::DecisionKind::Allowed,
+    );
     let Some(response) = upstream::forward(bytes, &request, config, transport).await else {
         return encode_local(&request, ResponseCode::ServFail);
     };

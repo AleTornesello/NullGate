@@ -767,3 +767,87 @@ async fn failed_persistence_preserves_the_live_and_durable_remote_source() {
         nullgate_core::SqliteRepository::open(scratch.0.join("state.sqlite3")).unwrap();
     assert_eq!(reopened.snapshot().unwrap(), before);
 }
+
+#[tokio::test]
+async fn metrics_existing_remote_refreshes_report_no_usable_content_as_rejected() {
+    use nullgate_core::metrics::{Metrics, MetricsSource};
+    let fixture = Fixture::new("old.invalid").await;
+    let scratch = Scratch::new();
+    let metrics = Metrics::default();
+    let coordinator = PolicyCoordinator::open(
+        scratch.0.join("state.sqlite3"),
+        PolicyOptions {
+            metrics: metrics.clone(),
+            ..PolicyOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    coordinator
+        .handle()
+        .save(
+            0,
+            Mutation::CreateList {
+                name: "Metrics refresh".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let service = RemoteService::new(
+        Arc::new(coordinator.handle()),
+        RemoteFetcher::new(
+            Arc::new(LocalPolicy::new(vec![fixture.address])),
+            FetchOptions::default(),
+        )
+        .unwrap(),
+    );
+    service
+        .import_url(1, 1, fixture.url("/rules"))
+        .await
+        .unwrap();
+    let id = remote_id(&coordinator);
+    for (attempt, body) in ["", "# comment-only\n", "not a valid rule"]
+        .into_iter()
+        .enumerate()
+    {
+        *fixture.plan.lock().unwrap() = Plan::text(body);
+        let revision = coordinator.reader().current().unwrap().revision();
+        let refreshed = service.refresh(revision, id).await.unwrap();
+        assert_eq!(refreshed.outcome, RemoteOutcome::NoValidRules);
+        assert!(
+            refreshed
+                .saved
+                .snapshot
+                .rules()
+                .blocks_domain(&normalize_host("old.invalid").unwrap())
+        );
+        assert_eq!(metrics.snapshot().imports.succeeded, 1);
+        assert_eq!(metrics.snapshot().imports.rejected, attempt as u64 + 1);
+    }
+    *fixture.plan.lock().unwrap() = Plan::text("new.invalid\nnot a valid rule");
+    let revision = coordinator.reader().current().unwrap().revision();
+    assert_eq!(
+        service.refresh(revision, id).await.unwrap().outcome,
+        RemoteOutcome::Applied
+    );
+    let mut plan = Plan::text("failed");
+    plan.status = 503;
+    *fixture.plan.lock().unwrap() = plan;
+    let revision = coordinator.reader().current().unwrap().revision();
+    assert_eq!(
+        service.refresh(revision, id).await.unwrap().outcome,
+        RemoteOutcome::FetchFailed(FetchFailure::HttpStatus)
+    );
+    let imports = metrics.snapshot().imports;
+    assert_eq!(
+        (
+            imports.succeeded,
+            imports.partial,
+            imports.rejected,
+            imports.failed
+        ),
+        (1, 1, 3, 1)
+    );
+    assert_eq!((imports.accepted_lines, imports.malformed_lines), (2, 2));
+    coordinator.shutdown().await.unwrap();
+}

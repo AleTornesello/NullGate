@@ -919,3 +919,101 @@ async fn shutdown_drains_an_active_write_and_an_already_queued_write_in_order() 
         PolicyError::Stopped
     );
 }
+
+#[tokio::test]
+async fn metrics_record_partial_rejected_and_failed_imports_without_restoring_history() {
+    use nullgate_core::metrics::{Metrics, MetricsSource};
+    let scratch = Scratch::new();
+    let (repo, source) = scratch.seed();
+    let metrics = Metrics::default();
+    let coordinator = PolicyCoordinator::start(
+        repo,
+        PolicyOptions {
+            metrics: metrics.clone(),
+            ..PolicyOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let api = coordinator.handle();
+    let saved = api
+        .save(2, import(source, "allowed.example\nmalformed rule"))
+        .await
+        .unwrap();
+    let revision = saved.snapshot.revision();
+    api.save(revision, import(source, "malformed rule"))
+        .await
+        .unwrap();
+    let revision = api.subscribe().current().unwrap().revision();
+    api.save(
+        revision,
+        Mutation::RemoteSourceAttempt {
+            list_id: 1,
+            url: "https://fixture.example/list".into(),
+            text: None,
+            at: 2,
+        },
+    )
+    .await
+    .unwrap();
+    let revision = api.subscribe().current().unwrap().revision();
+    api.save(
+        revision,
+        Mutation::RemoteSourceAttempt {
+            list_id: 1,
+            url: "https://fixture.example/list".into(),
+            text: Some("# no usable remote rules".into()),
+            at: 3,
+        },
+    )
+    .await
+    .unwrap();
+    let revision = api.subscribe().current().unwrap().revision();
+    api.save(revision, import(source, "second.example"))
+        .await
+        .unwrap();
+    assert!(
+        api.save(0, import(source, "conflict.example"))
+            .await
+            .is_err()
+    );
+    let imports = metrics.snapshot().imports;
+    assert_eq!(
+        (
+            imports.succeeded,
+            imports.partial,
+            imports.rejected,
+            imports.failed
+        ),
+        (1, 1, 2, 2)
+    );
+    assert_eq!((imports.accepted_lines, imports.malformed_lines), (2, 2));
+    coordinator.shutdown().await.unwrap();
+    let restarted_metrics = Metrics::default();
+    let restarted = PolicyCoordinator::open(
+        scratch.db(),
+        PolicyOptions {
+            metrics: restarted_metrics.clone(),
+            ..PolicyOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(restarted_metrics.snapshot().imports.succeeded, 0);
+    assert_eq!(restarted_metrics.snapshot().imports.partial, 0);
+    assert_eq!(restarted_metrics.snapshot().imports.rejected, 0);
+    assert_eq!(restarted_metrics.snapshot().imports.failed, 0);
+    assert!(
+        !restarted
+            .handle()
+            .subscribe()
+            .current()
+            .unwrap()
+            .repository()
+            .lists[0]
+            .sources[0]
+            .entries
+            .is_empty()
+    );
+    restarted.shutdown().await.unwrap();
+}

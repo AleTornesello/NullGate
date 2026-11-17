@@ -179,6 +179,47 @@ listen = "127.0.0.1:0"
                     expect(page.locator("#feedback")).to_contain_text("Attempt recorded")
                     assert Origin.requests == before
                     page.screenshot(path=str(artifacts / "remote-refresh.png"), full_page=True)
+                    # Aggregate dashboard uses the real service collectors and supervisor.
+                    metrics_url = fields["web_origin"] + "/api/v1/metrics"
+                    baseline = context.request.get(metrics_url).json()
+                    assert baseline["health"]["ready"] is True
+                    assert baseline["imports"]["partial"] == 2
+                    assert baseline["imports"]["failed"] == 2
+                    # A blocked local DNS decision requires no upstream or public resolver.
+                    labels = b"".join(bytes([len(label)]) + label for label in [b"blocked", b"invalid"]) + b"\0"
+                    dns_query = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + labels + b"\x00\x01\x00\x01"
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                        probe.settimeout(5)
+                        host, port = fields["dns_udp"].rsplit(":", 1)
+                        probe.sendto(dns_query, (host, int(port)))
+                        reply = probe.recv(4096)
+                        assert reply[:2] == b"\x12\x34" and reply[3] & 15 == 3
+                    assert filtered("/sibling?credential=never-retain-query")[0] == 200
+                    connection = http.client.HTTPConnection(fields["http"], timeout=5)
+                    connection.request("GET", "http://blocked.invalid/denied?credential=never-retain-query", headers={"Host": "blocked.invalid"})
+                    denied = connection.getresponse()
+                    assert denied.status == 403 and denied.read() == b""
+                    connection.close()
+                    updated_response = context.request.get(metrics_url + "?credential=never-retain-query")
+                    assert updated_response.status == 200
+                    assert "never-retain-query" not in updated_response.text()
+                    updated = updated_response.json()
+                    assert updated["dns"]["blocked"] == baseline["dns"]["blocked"] + 1
+                    assert updated["http"]["allowed"] == baseline["http"]["allowed"] + 1
+                    assert updated["http"]["blocked"] == baseline["http"]["blocked"] + 1
+                    page.get_by_role("link", name="Dashboard", exact=True).click()
+                    expect(page.get_by_role("heading", name="Traffic dashboard", exact=True)).to_be_visible()
+                    expect(page.locator('[data-metric="dns-blocked"]')).to_have_text(str(updated["dns"]["blocked"]))
+                    expect(page.locator('[data-metric="http-allowed"]')).to_have_text(str(updated["http"]["allowed"]))
+                    expect(page.locator('[data-metric="http-blocked"]')).to_have_text(str(updated["http"]["blocked"]))
+                    expect(page.locator('[data-metric="imports-partial"]')).to_have_text("2")
+                    expect(page.locator('[data-metric="imports-failed"]')).to_have_text("2")
+                    expect(page.locator(".health-ready")).to_contain_text("All services ready")
+                    page.get_by_role("link", name="Refresh metrics", exact=True).click()
+                    page.screenshot(path=str(artifacts / "dashboard.png"), full_page=True)
+                    page.set_viewport_size({"width": 390, "height": 844})
+                    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+                    page.screenshot(path=str(artifacts / "dashboard-mobile.png"), full_page=True)
                     assert not errors, "Browser JavaScript error"
                     context.close()
                     browser.close()
@@ -190,7 +231,7 @@ listen = "127.0.0.1:0"
             assert "PRIVATE KEY" not in log
             assert private_key not in log.encode()
             assert "runtime stopped" in log
-        print(json.dumps({"result": "passed", "checks": ["local Administrator login", "list creation", "mixed manual import diagnostics", "browser and HTTP proxy 200->403", "file import diagnostics", "rule removal 403->200", "remote import/refresh denies private destination before fetch", "Administrator public-CA download without private key", "clean shutdown"], "screenshot": str(artifacts / "blocklists.png")}))
+        print(json.dumps({"result": "passed", "checks": ["local Administrator login", "list creation", "mixed manual import diagnostics", "browser and HTTP proxy 200->403", "file import diagnostics", "rule removal 403->200", "remote import/refresh denies private destination before fetch", "Administrator public-CA download without private key", "aggregate dashboard and exact DNS/HTTP counter increments", "mobile dashboard rendering", "clean shutdown"], "screenshot": str(artifacts / "blocklists.png")}))
     finally:
         if process is not None:
             process.terminate()

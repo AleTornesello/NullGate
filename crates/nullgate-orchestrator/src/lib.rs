@@ -38,3 +38,5 @@ pub mod provision;
 pub use provision::provision_local_administrator;
 
 pub mod imports;
+
+pub mod metrics;

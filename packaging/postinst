@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+if ! getent group nullgate >/dev/null; then groupadd --system nullgate; fi
+if ! getent passwd nullgate >/dev/null; then
+    useradd --system --gid nullgate --home-dir /var/lib/nullgate --no-create-home --shell /usr/sbin/nologin nullgate
+fi
+entry=$(getent passwd nullgate)
+if [ "$(printf '%s' "$entry" | cut -d: -f3)" = 0 ] ||
+   [ "$(printf '%s' "$entry" | cut -d: -f6)" != /var/lib/nullgate ] ||
+   [ "$(printf '%s' "$entry" | cut -d: -f7)" != /usr/sbin/nologin ]; then
+    echo 'Existing nullgate identity is not the expected service account' >&2; exit 1
+fi
+if [ -L /etc/nullgate/nullgate.toml ] || [ ! -f /etc/nullgate/nullgate.toml ]; then
+    echo 'NullGate configuration must be a regular file' >&2; exit 1
+fi
+for path in /var/lib/nullgate /etc/nullgate; do
+    if [ -L "$path" ]; then echo 'NullGate package directories must not be symlinks' >&2; exit 1; fi
+done
+install -d -o nullgate -g nullgate -m 0700 /var/lib/nullgate
+chown root:nullgate /etc/nullgate
+chmod 0750 /etc/nullgate
+chown root:nullgate /etc/nullgate/nullgate.toml
+chmod 0640 /etc/nullgate/nullgate.toml
+# Do not start an unprovisioned service or overwrite existing state/configuration.
+if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload >/dev/null 2>&1 || true; fi

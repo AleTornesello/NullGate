@@ -223,6 +223,28 @@ pub(crate) async fn forward(
     tracker: &TaskTracker,
     permit: OwnedSemaphorePermit,
 ) -> Result<Response<ProxyBody>, ForwardError> {
+    forward_transport(request, target, options, tracker, permit, None).await
+}
+pub(crate) async fn forward_https(
+    request: Request<Incoming>,
+    target: &ValidatedTarget,
+    options: &HttpOptions,
+    tracker: &TaskTracker,
+    permit: OwnedSemaphorePermit,
+    tls: std::sync::Arc<rustls::ClientConfig>,
+) -> Result<Response<ProxyBody>, ForwardError> {
+    forward_transport(request, target, options, tracker, permit, Some(tls)).await
+}
+trait UpstreamIo: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> UpstreamIo for T {}
+async fn forward_transport(
+    request: Request<Incoming>,
+    target: &ValidatedTarget,
+    options: &HttpOptions,
+    tracker: &TaskTracker,
+    permit: OwnedSemaphorePermit,
+    tls: Option<std::sync::Arc<rustls::ClientConfig>>,
+) -> Result<Response<ProxyBody>, ForwardError> {
     let (mut parts, body) = request.into_parts();
     let nominated =
         prepare_headers(&mut parts.headers).map_err(|_| ForwardError::InvalidRequest)?;
@@ -237,7 +259,7 @@ pub(crate) async fn forward(
         .headers
         .insert(hyper::header::CONNECTION, HeaderValue::from_static("te"));
     let connect = async {
-        match target.normalized().host() {
+        let stream = match target.normalized().host() {
             NormalizedHost::Dns(name) => {
                 TcpStream::connect((name.as_str(), target.normalized().port())).await
             }
@@ -250,11 +272,24 @@ pub(crate) async fn forward(
                     .await
             }
         }
+        .map_err(|_| ForwardError::Gateway)?;
+        let stream: Box<dyn UpstreamIo> = if let Some(config) = tls {
+            let name = crate::tls::server_name(target.normalized().host())
+                .map_err(|_| ForwardError::Gateway)?;
+            Box::new(
+                tokio_rustls::TlsConnector::from(config)
+                    .connect(name, stream)
+                    .await
+                    .map_err(|_| ForwardError::Gateway)?,
+            )
+        } else {
+            Box::new(stream)
+        };
+        Ok::<_, ForwardError>(stream)
     };
     let stream = tokio::time::timeout(options.connect_timeout, connect)
         .await
-        .map_err(|_| ForwardError::Timeout)?
-        .map_err(|_| ForwardError::Gateway)?;
+        .map_err(|_| ForwardError::Timeout)??;
     let (sender, connection) =
         hyper::client::conn::http1::handshake::<_, ProxyBody>(TokioIo::new(stream))
             .await

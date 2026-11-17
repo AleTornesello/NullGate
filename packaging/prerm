@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+if command -v systemctl >/dev/null 2>&1; then systemctl stop nullgate.service >/dev/null 2>&1 || true; fi
+# Retain accounts, policy, CA and service identity on removal and upgrades.

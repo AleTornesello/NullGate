@@ -521,3 +521,57 @@ async fn upgraded_tunnels_hold_connection_and_request_admission_until_cleanup() 
     proxy.shutdown().await.unwrap();
     assert_eq!(control.active_count(), 0);
 }
+
+#[tokio::test]
+async fn metrics_keep_upgraded_tunnels_active_without_counting_opaque_payloads() {
+    use nullgate_core::metrics::{Metrics, MetricsSource};
+    let metrics = Metrics::default();
+    let origin = Echo::new().await;
+    let policy = PolicyFixture::new("blocked.example");
+    let proxy = HttpService::start(
+        HttpConfig {
+            listen: "127.0.0.1:0".parse().unwrap(),
+        },
+        policy.reader.clone(),
+        HttpOptions {
+            metrics: metrics.clone(),
+            ..HttpOptions::default()
+        },
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let (mut io, response) = request(
+        proxy.local_addr(),
+        &origin.address.to_string(),
+        &origin.address.to_string(),
+        "",
+    )
+    .await;
+    assert_eq!(status(&response), 200);
+    echo(
+        &mut io,
+        b"opaque secret credentials GET /?query=never-recorded",
+    )
+    .await;
+    assert_eq!(metrics.snapshot().active_http_connections, 1);
+    let (mut blocked, response) = request(
+        proxy.local_addr(),
+        "blocked.example:443",
+        "blocked.example:443",
+        "",
+    )
+    .await;
+    assert_eq!(status(&response), 403);
+    assert_eq!(bounded(blocked.read_to_end(&mut vec![])).await.unwrap(), 0);
+    assert_eq!(
+        (
+            metrics.snapshot().connect.allowed,
+            metrics.snapshot().connect.blocked
+        ),
+        (1, 1)
+    );
+    assert_eq!(metrics.snapshot().https.allowed, 0);
+    proxy.shutdown().await.unwrap();
+    assert_eq!(metrics.snapshot().active_http_connections, 0);
+}

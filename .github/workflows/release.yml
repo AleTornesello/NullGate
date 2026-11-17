@@ -1,0 +1,41 @@
+name: Prepare release candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+  candidate:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch locked source dependencies
+        run: cargo fetch --locked
+      - name: Test release tooling
+        run: python3 -m unittest discover -s scripts -p test_release.py
+      - name: Build twice from independent target directories
+        run: python3 scripts/release.py --require-clean --reproduce --output "$RUNNER_TEMP/nullgate-release"
+      - name: Rehearse clean user and dedicated installations
+        run: python3 scripts/rehearse_release.py --artifacts "$RUNNER_TEMP/nullgate-release/artifacts" --report "$RUNNER_TEMP/nullgate-release/VALIDATION.json"
+      - name: Verify candidate checksums
+        working-directory: ${{ runner.temp }}/nullgate-release/artifacts
+        run: sha256sum -c SHA256SUMS
+      - name: Store candidates for review only
+        uses: actions/upload-artifact@v4
+        with:
+          name: nullgate-linux-x86_64-candidate
+          path: |
+            ${{ runner.temp }}/nullgate-release/artifacts/*
+            ${{ runner.temp }}/nullgate-release/reproducibility.json
+            ${{ runner.temp }}/nullgate-release/VALIDATION.json
+          if-no-files-found: error
+          retention-days: 14
+# No release creation, contents:write, tag push, registry push or environment publication.

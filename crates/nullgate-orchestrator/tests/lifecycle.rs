@@ -290,6 +290,7 @@ impl Drop for Scratch {
 fn config(scratch: &Scratch, upstream: SocketAddr) -> nullgate_core::AppConfig {
     use nullgate_core::*;
     AppConfig {
+        oidc: None,
         schema_version: 1,
         data_dir: scratch.0.clone(),
         dns: DnsConfig {
@@ -675,4 +676,55 @@ async fn corrupt_ca_fails_before_readiness_without_replacing_material() {
     .await
     .unwrap();
     coordinator.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn metrics_health_tracks_unavailability_backoff_restarts_and_shutdown_without_resetting_counts()
+ {
+    use nullgate_core::metrics::{DecisionKind, MetricPhase, Metrics, MetricsSource, Traffic};
+    use nullgate_orchestrator::metrics::RuntimeMetrics;
+    let metrics = Metrics::default();
+    let source = RuntimeMetrics::new(metrics.clone());
+    assert!(source.snapshot().health.is_none());
+    let (mut publisher, policy) = policy();
+    let factory = Arc::new(Factory::default());
+    let supervisor = Supervisor::start(factory.clone(), policy, CancellationToken::new())
+        .await
+        .unwrap();
+    source.attach(supervisor.monitor());
+    assert!(source.snapshot().health.unwrap().ready);
+    assert_eq!(source.snapshot().dns.allowed, 0);
+    metrics.decision(Traffic::Dns, DecisionKind::Allowed);
+    publisher.unavailable(0, nullgate_core::UnavailableReason::CommittedNotActive);
+    assert!(!source.snapshot().health.unwrap().ready);
+    assert!(!source.snapshot().health.unwrap().policy_available);
+    publisher.publish(Arc::new(
+        PolicySnapshot::from_repository(RepositorySnapshot {
+            revision: 0,
+            lists: vec![],
+        })
+        .unwrap(),
+    ));
+    factory.fail(ServiceKind::Http);
+    spin(|| {
+        matches!(
+            source.snapshot().health.unwrap().http.phase,
+            MetricPhase::Backoff
+        )
+    })
+    .await;
+    assert!(!source.snapshot().health.unwrap().ready);
+    let ProxyPhase::Backoff { delay, .. } = supervisor.monitor().current().http.phase else {
+        panic!("expected backoff")
+    };
+    tokio::time::advance(delay).await;
+    spin(|| source.snapshot().health.unwrap().http.phase == MetricPhase::Ready).await;
+    assert_eq!(source.snapshot().health.unwrap().http.restarts, 1);
+    assert_eq!(source.snapshot().dns.allowed, 1);
+    supervisor.shutdown().await.unwrap();
+    assert_eq!(
+        source.snapshot().health.unwrap().http.phase,
+        MetricPhase::Stopped
+    );
+    assert!(!source.snapshot().health.unwrap().ready);
 }

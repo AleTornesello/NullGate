@@ -7,6 +7,8 @@ use axum::{
 };
 pub fn management_routes() -> Router<WebState> {
     let small = Router::new()
+        .route("/api/v1/metrics", get(crate::metrics::read))
+        .route("/dashboard", get(crate::metrics::dashboard))
         .route(
             "/api/v1/certificates/ca",
             get(crate::certificates::download),

@@ -1,0 +1,7 @@
+{
+  "target": "x86_64-unknown-linux-gnu",
+  "builder": "rust@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd",
+  "rust": "1.99.1",
+  "glibc_baseline": "2.36",
+  "packager": "python@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c"
+}

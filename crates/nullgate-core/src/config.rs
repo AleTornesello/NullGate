@@ -15,6 +15,8 @@ pub struct AppConfig {
     pub limits: ResourceLimits,
     #[serde(default, deserialize_with = "deserialize_auth")]
     pub auth: AuthMode,
+    #[serde(default)]
+    pub oidc: Option<crate::OidcConfig>,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -126,6 +128,12 @@ impl AppConfig {
                 tls.private_key_file = base.join(&tls.private_key_file);
             }
         }
+        if let Some(oidc) = &mut config.oidc
+            && let Some(path) = &mut oidc.client_secret_file
+            && path.is_relative()
+        {
+            *path = base.join(&*path);
+        }
         Ok(config)
     }
     /// Read a bounded UTF-8 configuration file; errors never include its contents.
@@ -143,6 +151,16 @@ impl AppConfig {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
+        if (self.auth == AuthMode::Oidc) != self.oidc.is_some() {
+            return Err(ConfigError::field(
+                "oidc",
+                "OIDC mode requires provider configuration; other modes must omit it",
+            ));
+        }
+        if let Some(oidc) = &self.oidc {
+            oidc.validate(&self.web)?;
+        }
+
         if self.schema_version != 1 {
             return Err(ConfigError::field(
                 "schema_version",
@@ -274,7 +292,7 @@ impl std::fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl ConfigError {
-    fn field(key: &str, message: &'static str) -> Self {
+    pub(crate) fn field(key: &str, message: &'static str) -> Self {
         Self {
             key: key.into(),
             line: None,

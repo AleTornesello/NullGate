@@ -968,3 +968,87 @@ async fn embedded_dots_are_never_interpreted_as_dns_label_boundaries() {
     assert_eq!(upstream.count(), 2);
     service.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn metrics_count_policy_decisions_once_per_query_and_release_tcp_on_shutdown() {
+    use nullgate_core::metrics::{Metrics, MetricsSource};
+    let metrics = Metrics::default();
+    let fixture = Fixture::new(Mode::Normal).await;
+    let mut policy = PolicyFixture::new("blocked.example\n*.ads.example\nhttps://url.example/ads");
+    let service = DnsService::start(
+        config(vec![fixture.address]),
+        policy.reader.clone(),
+        DnsOptions {
+            metrics: metrics.clone(),
+            ..DnsOptions::default()
+        },
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    for name in ["blocked.example", "x.ads.example"] {
+        assert_eq!(
+            udp(service.udp_addr(), &query(name, RecordType::A))
+                .await
+                .metadata
+                .response_code,
+            ResponseCode::NXDomain
+        );
+    }
+    for kind in [RecordType::A, RecordType::AAAA] {
+        assert_eq!(
+            udp(service.udp_addr(), &query("url.example", kind))
+                .await
+                .metadata
+                .response_code,
+            ResponseCode::NoError
+        );
+    }
+    let mut client = TcpStream::connect(service.tcp_addr()).await.unwrap();
+    write_frame(
+        &mut client,
+        &query("allowed.example", RecordType::A).to_vec().unwrap(),
+    )
+    .await;
+    bounded(read_frame(&mut client)).await;
+    assert_eq!(metrics.snapshot().active_dns_connections, 1);
+    // A malformed query and an unavailable policy are neither allowed nor blocked.
+    let mut malformed = query("allowed.example", RecordType::A);
+    malformed.queries.clear();
+    udp(service.udp_addr(), &malformed).await;
+    policy
+        .publisher
+        .unavailable(policy.revision, UnavailableReason::CommittedNotActive);
+    udp(service.udp_addr(), &query("allowed.example", RecordType::A)).await;
+    assert_eq!(
+        (
+            metrics.snapshot().dns.allowed,
+            metrics.snapshot().dns.blocked
+        ),
+        (3, 2)
+    );
+    service.shutdown().await.unwrap();
+    assert_eq!(metrics.snapshot().active_dns_connections, 0);
+    let silent = Fixture::new(Mode::Silent).await;
+    let policy = PolicyFixture::new("");
+    let service = DnsService::start(
+        config(vec![silent.address]),
+        policy.reader.clone(),
+        DnsOptions {
+            metrics: metrics.clone(),
+            ..DnsOptions::default()
+        },
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        udp(service.udp_addr(), &query("timeout.example", RecordType::A))
+            .await
+            .metadata
+            .response_code,
+        ResponseCode::ServFail
+    );
+    assert_eq!(metrics.snapshot().dns.allowed, 4);
+    service.shutdown().await.unwrap();
+}
